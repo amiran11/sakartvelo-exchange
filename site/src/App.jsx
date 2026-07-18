@@ -134,6 +134,7 @@ function makeInitialState() {
 }
 
 export default function App() {
+  const [view, setView] = useState("game"); // game | whitepaper
   const [phase, setPhase] = useState("landing"); // landing | claim | auction | governance | trading | end
   const [game, setGame] = useState(makeInitialState);
   const [now, setNow] = useState(Date.now());
@@ -327,6 +328,10 @@ export default function App() {
     return total;
   };
 
+  if (view === "whitepaper") {
+    return <WhitePaper onBack={() => setView("game")} />;
+  }
+
   return (
     <div style={{ fontFamily: "Inter, sans-serif", background: "linear-gradient(180deg,#141B18,#1B2622)", minHeight: "100%", color: "#EDE6D6" }}>
       <style>{`
@@ -346,6 +351,13 @@ export default function App() {
           <div className="mono" style={{ fontSize: 11, opacity: 0.55, letterSpacing: 1 }}>A STATE-ASSET AUCTION SIMULATION</div>
         </div>
         <div className="flex items-center gap-4">
+          <button
+            onClick={() => setView("whitepaper")}
+            className="mono"
+            style={{ fontSize: 11, opacity: 0.6, letterSpacing: 0.5, background: "none", border: "none", color: "#EDE6D6", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 3 }}
+          >
+            WHITE PAPER
+          </button>
           <div className="mono" style={{ fontSize: 11, opacity: 0.6 }} title={wallet.address}>
             {wallet.address.slice(0, 6)}…{wallet.address.slice(-4)}
           </div>
@@ -405,6 +417,150 @@ export default function App() {
         it opens for trading. Named for real Georgian regions, industries, and infrastructure (Bolnisi,
         Tkibuli, Racha, Chiatura, Zestafoni, Enguri, Batumi, Anaklia) but this is a fictional simulation,
         not affiliated with any real company, agency, or state entity.
+      </div>
+    </div>
+  );
+}
+
+function WhitePaper({ onBack }) {
+  const Section = ({ n, title, children }) => (
+    <div style={{ marginBottom: 30 }}>
+      <div className="zilla" style={{ fontSize: 17, fontWeight: 700, marginBottom: 8, color: "#EDE6D6" }}>
+        <span className="mono" style={{ opacity: 0.45, marginRight: 8, fontSize: 14 }}>{n}</span>{title}
+      </div>
+      <div style={{ fontSize: 13.5, lineHeight: 1.7, opacity: 0.82 }}>{children}</div>
+    </div>
+  );
+  return (
+    <div style={{ fontFamily: "Inter, sans-serif", background: "linear-gradient(180deg,#141B18,#1B2622)", minHeight: "100vh", color: "#EDE6D6" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;700&family=IBM+Plex+Mono:wght@500;600&family=Inter:wght@400;500;600;700&display=swap');
+        .zilla { font-family: 'Zilla Slab', serif; }
+        .mono { font-family: 'IBM Plex Mono', monospace; }
+      `}</style>
+
+      <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: "1px solid rgba(237,230,214,0.15)" }}>
+        <div className="zilla" style={{ fontSize: 20, fontWeight: 700 }}>SAKARTVELO EXCHANGE</div>
+        <button
+          onClick={onBack}
+          className="mono"
+          style={{ fontSize: 11, letterSpacing: 0.5, background: "rgba(237,230,214,0.08)", border: "none", color: "#EDE6D6", cursor: "pointer", padding: "8px 14px", borderRadius: 3 }}
+        >
+          ← BACK TO EXCHANGE
+        </button>
+      </div>
+
+      <div className="px-6 py-12" style={{ maxWidth: 760, margin: "0 auto" }}>
+        <div style={{ background: "rgba(201,138,62,0.12)", border: "1px solid #C98A3E", borderRadius: 4, padding: "14px 16px", marginBottom: 36 }}>
+          <div className="mono" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: "#C98A3E", marginBottom: 4 }}>
+            ⚠ FICTIONAL SIMULATION
+          </div>
+          <div style={{ fontSize: 12.5, lineHeight: 1.55, opacity: 0.85 }}>
+            This is a protocol design for a simulated game, not a real financial product, security, or claim on
+            any real-world asset. Any resemblance to real states, companies, or agencies is fictional and exists
+            solely as a gamified rule-set.
+          </div>
+        </div>
+
+        <div className="mono" style={{ fontSize: 11, opacity: 0.5, letterSpacing: 1, marginBottom: 6 }}>PROTOCOL WHITE PAPER</div>
+        <div className="zilla" style={{ fontSize: 32, fontWeight: 700, marginBottom: 8, lineHeight: 1.15 }}>
+          Sakartvelo Exchange
+        </div>
+        <div style={{ fontSize: 14.5, opacity: 0.7, marginBottom: 44, lineHeight: 1.6 }}>
+          A closed-loop allocation, a competitive market, and elected, term-limited governance —
+          simulating how a state's holdings could pass into citizen ownership without a "sell it for cash"
+          method that structurally favors whoever already has capital.
+        </div>
+
+        <Section n="0" title="Abstract">
+          Most privatization designs fail in one of two familiar ways: sold for cash, ownership concentrates
+          immediately among whoever already had money; given away as freely tradable vouchers, it concentrates
+          almost as fast, as recipients sell under financial pressure for a fraction of value. Sakartvelo
+          Exchange is a mechanism-design response to both failure modes at once — an allocation that cannot be
+          resold for cash, a price set by competitive bidding rather than a bureaucrat's estimate, and a
+          governance layer that is elected and term-limited rather than inherited or appointed.
+        </Section>
+
+        <Section n="1" title="The problem this is modeling">
+          Call it the purchasing-power gap: when state assets are sold at market price, the people with the
+          least capital are structurally excluded before the auction even opens. Historical voucher
+          privatizations tried to fix this by giving equity away for free — but freely tradable vouchers just
+          moved the same problem a few months downstream, as recipients facing real financial pressure sold
+          them cheaply to whoever already had cash. Neither method actually distributes ownership; the second
+          one just adds a delay. Sakartvelo Exchange tests a third structure: equal allocation of a currency
+          that literally cannot be sold for cash, spent only on bidding for real shares at a real,
+          competitively-discovered price.
+        </Section>
+
+        <Section n="2" title="Phase one — monetization">
+          Every verified citizen receives one equal, one-time allocation of INVEST — a closed-loop token that
+          can be spent bidding at auction, but never transferred wallet-to-wallet, gifted, or sold. That
+          closes the exact hole that sank voucher privatization: there's no way to cash out early under
+          pressure, because there's no legitimate path for INVEST to reach anyone except through the auction
+          house itself. Total emission is capped two separate ways — a hard numeric ceiling independent of who
+          gets verified, and a rule tying new allocations to whether the privatization process is still
+          actually running. Once every listed asset has been sold, issuance stops entirely, for everyone,
+          citizen or not.
+        </Section>
+
+        <Section n="3" title="Phase two — the auction">
+          Each listed company auctions a fixed number of shares. Every bid is sealed until settlement; the
+          highest bidders each win one share and pay exactly what they bid — no uniform clearing price, no
+          bureaucrat-set floor. Winning shares are locked for a period after minting, so a bidder can't flip
+          their new stake for a quick profit before governance ever gets a chance to organize — ownership has
+          to mean something before it becomes tradable.
+        </Section>
+
+        <Section n="4" title="Phase three — governance">
+          Once a company is at least half-assigned to real owners, candidacy opens: any current shareholder
+          can put themselves forward with a short platform. Shareholders vote, weighted by shares of that
+          specific company. Winning takes a real majority — 51% of votes cast — not just a plurality; if
+          nobody clears that bar, the field narrows to the top two and voting runs again, a runoff rather than
+          a single contested plurality vote. The winner holds office for a fixed term, then the whole cycle
+          reopens from nothing. And the elected wallet itself never directly operates the company — the
+          winner registers a separate, freshly-generated operating key for that term specifically, which goes
+          dead the moment the term ends. A new term means a genuinely new key, not just a renewed mandate on
+          an old one.
+        </Section>
+
+        <Section n="5" title="Phase four — treasury and capital">
+          An elected governor can move a small, fixed share of any single asset a company holds without
+          needing anyone's approval — enough for ordinary operations, not enough to matter if that key is ever
+          compromised. Anything larger has to go one of two ways: sold at open market through a sealed-bid
+          process where the governor never learns who's bidding what until after bidding closes and settlement
+          needs no one's signature at all, or paid to a specific named party only after a real shareholder
+          vote approves it — the path for a fixed invoice an open auction can't express. Separately, every
+          term ends with its own mandatory vote: shareholders decide, independent of whatever the outgoing
+          governor did, whether to pay out a small dividend or leave the capital invested for whoever governs
+          next.
+        </Section>
+
+        <Section n="6" title="Phase five — secondary markets">
+          Two markets exist beyond the primary auction. Shareholders can list and sell shares once their lock
+          period ends, and companies can do the same with stakes they've built up in each other. Separately,
+          citizenship itself is a one-time, historical fact — verified and allocated only during the original
+          privatization window. Anyone arriving afterward has no free path to INVEST at all; their only way in
+          is buying spare INVEST from an existing citizen or a company treasury, paid for in another crypto
+          asset. There is no fiat on-ramp anywhere in the design — deliberately. What counts as an acceptable
+          payment asset is a governance decision, not something the protocol can verify on its own.
+        </Section>
+
+        <Section n="7" title="What isn't solved">
+          Worth stating plainly rather than glossing over. A protocol can't verify that two wallets belong to
+          different people — the citizen-verification layer stops trivial throwaway-wallet farming, not one
+          person controlling several verified identities. A single administrative key still controls who
+          counts as a citizen and which assets get listed at all, which is a real concentration of power this
+          design hasn't distributed. Nothing here has been through a professional security audit, adversarial
+          testing, or a live testnet under real conditions. Treated as a finished, trustworthy system rather
+          than a working simulation of one, it would be a mistake — the interesting part is the mechanism
+          design, not a claim that every risk has been closed out.
+        </Section>
+
+        <div className="mono" style={{ fontSize: 11, opacity: 0.4, marginTop: 50, paddingTop: 20, borderTop: "1px solid rgba(237,230,214,0.12)", lineHeight: 1.6 }}>
+          Implemented across three contracts — InvestToken, ShareAuction, and CompanyTreasury — split apart
+          because the full mechanism exceeded Ethereum's single-contract size limit once built out in full.
+          Source and full technical documentation ship alongside this site.
+        </div>
       </div>
     </div>
   );
