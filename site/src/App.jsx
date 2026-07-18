@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { Wallet } from "ethers";
 import {
   Landmark, Pickaxe, Flame, Layers, TreePine, Gavel, Train, Factory, Zap, Anchor, Mountain, Ship,
-  TrendingUp, TrendingDown, Trophy, Wallet, Clock, Hash, RotateCcw
+  TrendingUp, TrendingDown, Trophy, Wallet as WalletIcon, Clock, Hash, RotateCcw
 } from "lucide-react";
 
 // "owned" = the state directly holds and operates the asset today.
@@ -42,8 +43,32 @@ const HOLDERS = ["player", ...BOTS.map(b => b.id)];
 function serial(assetId) {
   return assetId.toUpperCase() + "-" + Math.random().toString(16).slice(2, 8).toUpperCase();
 }
-function shortHash() {
-  return "0x" + Math.random().toString(16).slice(2, 10);
+
+// A REAL secp256k1 keypair, generated in the visitor's own browser via
+// ethers.js — not the cosmetic placeholder the chat-preview version of this
+// game uses (that sandbox can't load ethers, so it fakes a hex string that
+// only looks like an address).
+//
+// Honesty check on what this does and doesn't solve: persisting the key in
+// localStorage means "one wallet per browser," not "one wallet per human."
+// Clearing site data or opening a private window gets a fresh wallet and a
+// fresh claim — this is friction, not identity verification. The contracts
+// (InvestToken.sol) have the real gate: claim() requires
+// verifiedCitizen[address] == true, set by whoever runs identity checks
+// off-chain. This function does not call that contract — see the README
+// for what's needed to wire this wallet to the deployed contracts for real.
+function getOrCreateWallet() {
+  try {
+    const savedKey = window.localStorage.getItem("sakartvelo_wallet_pk");
+    if (savedKey) return new Wallet(savedKey);
+    const fresh = Wallet.createRandom();
+    window.localStorage.setItem("sakartvelo_wallet_pk", fresh.privateKey);
+    return fresh;
+  } catch {
+    // localStorage unavailable (private browsing, storage disabled) — fall
+    // back to a wallet that just won't survive a refresh.
+    return Wallet.createRandom();
+  }
 }
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 function fmt(n) { return Math.round(n).toLocaleString(); }
@@ -109,13 +134,13 @@ function makeInitialState() {
 }
 
 export default function App() {
-  const [phase, setPhase] = useState("claim"); // claim | auction | governance | trading | end
+  const [phase, setPhase] = useState("landing"); // landing | claim | auction | governance | trading | end
   const [game, setGame] = useState(makeInitialState);
   const [now, setNow] = useState(Date.now());
   const [governanceEndsAt, setGovernanceEndsAt] = useState(null);
   const [tradingEndsAt, setTradingEndsAt] = useState(null);
   const [mintPopup, setMintPopup] = useState(null);
-  const walletHash = useState(() => shortHash())[0];
+  const wallet = useState(() => getOrCreateWallet())[0];
   const tickRef = useRef(null);
 
   const resetGame = useCallback(() => {
@@ -321,18 +346,22 @@ export default function App() {
           <div className="mono" style={{ fontSize: 11, opacity: 0.55, letterSpacing: 1 }}>A STATE-ASSET AUCTION SIMULATION</div>
         </div>
         <div className="flex items-center gap-4">
-          <div className="mono" style={{ fontSize: 11, opacity: 0.6 }}>{walletHash}</div>
+          <div className="mono" style={{ fontSize: 11, opacity: 0.6 }} title={wallet.address}>
+            {wallet.address.slice(0, 6)}…{wallet.address.slice(-4)}
+          </div>
           {(phase === "auction" || phase === "governance" || phase === "trading" || phase === "end") && (
             <div className="mono flex items-center gap-1.5" style={{ fontSize: 11, opacity: 0.55 }} title="1% of every winning bid, off the top">
               <Hash size={11} /> host take {fmt(game.hostTake)}
             </div>
           )}
           <div className="flex items-center gap-2 px-3 py-1.5 rounded" style={{ background: "rgba(237,230,214,0.08)" }}>
-            <Wallet size={16} />
+            <WalletIcon size={16} />
             <span className="mono" style={{ fontWeight: 600 }}>{fmt(game.cash.player)} INVEST</span>
           </div>
         </div>
       </div>
+
+      {phase === "landing" && <LandingScreen onEnter={() => setPhase("claim")} />}
 
       {phase === "claim" && <ClaimScreen onClaim={claim} />}
 
@@ -381,6 +410,100 @@ export default function App() {
   );
 }
 
+function LandingScreen({ onEnter }) {
+  const Section = ({ title, children }) => (
+    <div style={{ marginBottom: 22 }}>
+      <div className="zilla" style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: "#EDE6D6" }}>{title}</div>
+      <div style={{ fontSize: 13, lineHeight: 1.6, opacity: 0.78 }}>{children}</div>
+    </div>
+  );
+  return (
+    <div className="px-6 py-10" style={{ maxWidth: 720, margin: "0 auto" }}>
+      <div style={{ background: "rgba(201,138,62,0.12)", border: "1px solid #C98A3E", borderRadius: 4, padding: "14px 16px", marginBottom: 28 }}>
+        <div className="mono" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: "#C98A3E", marginBottom: 4 }}>
+          ⚠ FICTIONAL SIMULATION
+        </div>
+        <div style={{ fontSize: 12.5, lineHeight: 1.55, opacity: 0.85 }}>
+          This is not a real country, government, company, or financial product. Any resemblance to real
+          states, state assets, or companies is fictional and exists solely as a gamified rule-set — a
+          setting, not a claim about anything real. Nothing here is a security or a claim on any
+          real-world asset.
+        </div>
+      </div>
+
+      <div className="zilla" style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>How this works</div>
+      <div className="mono" style={{ fontSize: 11, opacity: 0.5, marginBottom: 28, letterSpacing: 0.5 }}>
+        READ BEFORE YOU CLAIM — IT ONLY TAKES A MINUTE
+      </div>
+
+      <Section title="1. Citizenship is a one-time, historical fact">
+        Only wallets verified and claimed during the original privatization window count as citizens.
+        Once that window closes, no one — citizen or not — gets a new free allocation, ever.
+      </Section>
+
+      <Section title="2. Auctions decide who owns what">
+        Each state concern — a mine, a rail network, a port, land, forest — auctions off a fixed number of
+        shares. Highest bidders win a share each and pay exactly what they bid. Shares are locked for a
+        period after minting before they can be resold.
+      </Section>
+
+      <Section title="3. Once a company is half-sold, shareholders govern it">
+        As soon as at least half of a company's shares have real owners, any shareholder can put themselves
+        forward as a candidate with a short platform (roughly 700 words). Other shareholders vote, weighted
+        by how many shares of that company they hold.
+      </Section>
+
+      <Section title="4. Winning takes 51%, not just the most votes">
+        A candidate needs 51% of the votes actually cast to win outright. If nobody clears that bar, every
+        candidate except the top two is eliminated and another round of voting opens — a runoff. This
+        repeats until someone wins.
+      </Section>
+
+      <Section title="5. The governor's term is one month — with its own key">
+        The elected governor gets 30 days of authority. Winning the election doesn't hand over control
+        directly — the governor registers a fresh keypair specifically for operating the company that term,
+        separate from their personal wallet. When the term ends, that key stops working entirely, and
+        whoever wins the next election registers a brand new one.
+      </Section>
+
+      <Section title="6. What a governor can actually do">
+        Reinvest the company's capital into another company's live auction (buy). Sell a stake the company
+        holds in another company back onto the market, or sell down its own capital for outside crypto
+        (sell). Move any other asset the company holds. All of it — on-chain, visible, and only for the
+        length of one term.
+      </Section>
+
+      <Section title="7. Every term ends with a mandatory vote">
+        Once a governor's term is over, every shareholder votes: pay out 1% of the company's capital as a
+        dividend, or leave it invested. Simple majority decides — this happens automatically, regardless of
+        what the outgoing governor chose to do during their term.
+      </Section>
+
+      <Section title="8. Joining after the fact means buying in — never for free">
+        Anyone who wasn't a citizen during the original privatization has no path to a free allocation.
+        Their only way in is buying spare INVEST from a citizen or a company treasury, paid for in an
+        approved crypto asset. There is no fiat on-ramp anywhere in this system — no bank transfer, no card
+        payment, nothing pegged to a government currency by design.
+      </Section>
+
+      <Section title="What this demo simplifies">
+        This playable version compresses governance into a single instant choice per company, for pace. The
+        real, deployed contracts implement everything above in full: candidacy, runoff rounds, rotating
+        operating keys, the end-of-term policy vote, and the INVEST secondary market. If you deploy the
+        contracts yourself, that's the version that actually runs.
+      </Section>
+
+      <button
+        onClick={onEnter}
+        className="mono"
+        style={{ background: "#EDE6D6", color: "#1C1A16", border: "none", padding: "12px 28px", borderRadius: 3, fontWeight: 700, cursor: "pointer", fontSize: 13, letterSpacing: 0.5, marginTop: 8 }}
+      >
+        ENTER THE EXCHANGE
+      </button>
+    </div>
+  );
+}
+
 function ClaimScreen({ onClaim }) {
   return (
     <div className="flex items-center justify-center" style={{ minHeight: 420 }}>
@@ -394,7 +517,9 @@ function ClaimScreen({ onClaim }) {
           is yours to decide.
         </p>
         <p className="mono" style={{ fontSize: 10, opacity: 0.45, marginBottom: 20 }}>
-          One allocation per verified wallet — the contract version gates this behind identity, not just a checkbox.
+          A real wallet was just generated in your browser — one per browser, not one per person. Clearing
+          site data gets you a fresh wallet and a fresh claim; the deployed contracts are what actually gate
+          this behind verified identity, not this demo.
         </p>
         <button
           onClick={onClaim}

@@ -1,9 +1,29 @@
 # Sakartvelo Exchange — site
 
-The playable game (`sovereign-lots.jsx` from the main repo, renamed
-`src/App.jsx` here) wrapped in a real Vite build so it can be deployed as an
-actual website. No backend, no database, no wallet — it's a self-contained
-simulation that runs entirely in the visitor's browser.
+The playable game, wrapped in a real Vite build so it can be deployed as an
+actual website.
+
+## Wallets: what's real now, what isn't yet
+
+Every visitor gets a **real secp256k1 wallet**, generated in their own
+browser with `ethers.js` and persisted in `localStorage` (so the same
+browser keeps the same wallet across visits). This replaced the earlier
+fake placeholder hash.
+
+Be clear-eyed about what this does and doesn't solve:
+
+- **What it fixes:** the wallet is real and unique per browser, not a
+  cosmetic string. It's the actual identity primitive the real contracts
+  (`InvestToken.sol`) expect.
+- **What it doesn't fix:** "one wallet per browser" is not "one wallet per
+  human." Clear site data or open a private window, and you get a fresh
+  wallet with a fresh 1000 INVEST — sybil resistance hasn't moved. That's
+  still `verifiedCitizen[address]` in `InvestToken.sol`, gated by whoever
+  runs identity checks off-chain (see the main repo's `contracts/README.md`).
+- **This wallet doesn't touch the contracts yet.** The game's economy is
+  still simulated client-side (React state, bots, no real transactions).
+  The wallet exists and is real; it's not yet calling `claim()` or
+  `placeBid()` on anything deployed.
 
 ## Run it locally
 
@@ -15,7 +35,7 @@ npm run dev
 ## Deploy it (pick one — all have free tiers, all auto-redeploy on push)
 
 **Vercel** — vercel.com -> "New Project" -> import this repo -> it
-auto-detects Vite -> Deploy. Done, you get a URL immediately.
+auto-detects Vite -> Deploy.
 
 **Netlify** — netlify.com -> "Add new site" -> import this repo -> build
 command `npm run build`, publish directory `dist` -> Deploy.
@@ -26,39 +46,22 @@ command `npm run build`, publish directory `dist` -> Deploy.
 3. Add to `package.json` scripts: `"deploy": "vite build && gh-pages -d dist"`
 4. `npm run deploy`
 
-Any of these gives you one shareable link — nobody needs to install
-anything, clone a repo, or set up a wallet to play. That's the whole point:
-this version needs zero onboarding.
+## What's needed to wire the real wallet to the real contracts
 
-## If you eventually want this backed by a real chain
+Three things, none of which can be provisioned from a sandbox — all
+require you to hold funded keys/accounts:
 
-The `contracts/` folder in the main repo (`InvestToken.sol`,
-`ShareAuction.sol`) is the real, deployable version. Wiring this front end
-to it for real citizens is a materially bigger step — see the "real chain"
-notes below before treating it as the same kind of one-click deploy as this
-site is.
-
-### Why "real citizens, real wallets" is the hard part
-
-The game as built needs nothing from a visitor. The moment you wire it to
-`InvestToken`/`ShareAuction` on a real chain, every visitor needs a wallet
-before they can do anything — and that's exactly the "chasing citizens one
-by one" problem. The standard fixes, roughly in order of how much friction
-they remove:
-
-- **Embedded / social-login wallets** (Privy, thirdweb, Dynamic, Coinbase
-  Smart Wallet) — a visitor signs in with email or Google, a wallet is
-  created for them behind the scenes. No browser extension, no seed phrase.
-  This is the realistic path if the goal is "anyone can show up and claim."
-- **WalletConnect / injected wallet button** — the traditional route
-  (MetaMask etc.). Works, but assumes the visitor already has a wallet,
-  which most people don't.
-- **Gas** — someone still has to pay for `claim()` and `placeBid()`
-  transactions. On a testnet that's free faucet ETH; on a real chain you'd
-  want a paymaster/sponsor (account abstraction, ERC-4337) so citizens
-  aren't asked to buy crypto before they can claim a free allocation —
-  otherwise you've recreated exactly the purchasing-power barrier the
-  whole design is meant to remove.
-
-None of this is required to make the *game* playable — only to make the
-*real token version* usable by people who've never touched crypto before.
+1. **Deployed contracts.** `InvestToken.sol` and `ShareAuction.sol` need to
+   actually exist on a chain. See the main repo's `contracts/README.md` for
+   the Remix/Sepolia walkthrough.
+2. **An RPC endpoint** the browser can talk to (a public Sepolia RPC, or a
+   free-tier Alchemy/Infura endpoint). The frontend would connect via
+   `ethers.JsonRpcProvider(rpcUrl)` and attach the visitor's wallet to it.
+3. **A gas-funding strategy.** Every `claim()` and `placeBid()` costs gas.
+   On testnet that's free faucet ETH, but a visitor manually fetching
+   faucet funds before they can claim a "free" allocation recreates the
+   purchasing-power barrier this whole design exists to remove. A
+   paymaster/relayer (account abstraction, ERC-4337) that sponsors gas for
+   verified citizens is the real fix — that's a bigger build than swapping
+   in a wallet was, and worth treating as its own step rather than bundling
+   it in casually.

@@ -109,7 +109,7 @@ function makeInitialState() {
 }
 
 export default function SovereignLots() {
-  const [phase, setPhase] = useState("claim"); // claim | auction | governance | trading | end
+  const [phase, setPhase] = useState("landing"); // landing | claim | auction | governance | trading | end
   const [game, setGame] = useState(makeInitialState);
   const [now, setNow] = useState(Date.now());
   const [governanceEndsAt, setGovernanceEndsAt] = useState(null);
@@ -334,6 +334,8 @@ export default function SovereignLots() {
         </div>
       </div>
 
+      {phase === "landing" && <LandingScreen onEnter={() => setPhase("claim")} />}
+
       {phase === "claim" && <ClaimScreen onClaim={claim} />}
 
       {(phase === "auction" || phase === "governance" || phase === "trading") && (
@@ -377,6 +379,100 @@ export default function SovereignLots() {
         Tkibuli, Racha, Chiatura, Zestafoni, Enguri, Batumi, Anaklia) but this is a fictional simulation,
         not affiliated with any real company, agency, or state entity.
       </div>
+    </div>
+  );
+}
+
+function LandingScreen({ onEnter }) {
+  const Section = ({ title, children }) => (
+    <div style={{ marginBottom: 22 }}>
+      <div className="zilla" style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: "#EDE6D6" }}>{title}</div>
+      <div style={{ fontSize: 13, lineHeight: 1.6, opacity: 0.78 }}>{children}</div>
+    </div>
+  );
+  return (
+    <div className="px-6 py-10" style={{ maxWidth: 720, margin: "0 auto" }}>
+      <div style={{ background: "rgba(201,138,62,0.12)", border: "1px solid #C98A3E", borderRadius: 4, padding: "14px 16px", marginBottom: 28 }}>
+        <div className="mono" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: "#C98A3E", marginBottom: 4 }}>
+          ⚠ FICTIONAL SIMULATION
+        </div>
+        <div style={{ fontSize: 12.5, lineHeight: 1.55, opacity: 0.85 }}>
+          This is not a real country, government, company, or financial product. Any resemblance to real
+          states, state assets, or companies is fictional and exists solely as a gamified rule-set — a
+          setting, not a claim about anything real. Nothing here is a security or a claim on any
+          real-world asset.
+        </div>
+      </div>
+
+      <div className="zilla" style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>How this works</div>
+      <div className="mono" style={{ fontSize: 11, opacity: 0.5, marginBottom: 28, letterSpacing: 0.5 }}>
+        READ BEFORE YOU CLAIM — IT ONLY TAKES A MINUTE
+      </div>
+
+      <Section title="1. Citizenship is a one-time, historical fact">
+        Only wallets verified and claimed during the original privatization window count as citizens.
+        Once that window closes, no one — citizen or not — gets a new free allocation, ever.
+      </Section>
+
+      <Section title="2. Auctions decide who owns what">
+        Each state concern — a mine, a rail network, a port, land, forest — auctions off a fixed number of
+        shares. Highest bidders win a share each and pay exactly what they bid. Shares are locked for a
+        period after minting before they can be resold.
+      </Section>
+
+      <Section title="3. Once a company is half-sold, shareholders govern it">
+        As soon as at least half of a company's shares have real owners, any shareholder can put themselves
+        forward as a candidate with a short platform (roughly 700 words). Other shareholders vote, weighted
+        by how many shares of that company they hold.
+      </Section>
+
+      <Section title="4. Winning takes 51%, not just the most votes">
+        A candidate needs 51% of the votes actually cast to win outright. If nobody clears that bar, every
+        candidate except the top two is eliminated and another round of voting opens — a runoff. This
+        repeats until someone wins.
+      </Section>
+
+      <Section title="5. The governor's term is one month — with its own key">
+        The elected governor gets 30 days of authority. Winning the election doesn't hand over control
+        directly — the governor registers a fresh keypair specifically for operating the company that term,
+        separate from their personal wallet. When the term ends, that key stops working entirely, and
+        whoever wins the next election registers a brand new one.
+      </Section>
+
+      <Section title="6. What a governor can actually do">
+        Reinvest the company's capital into another company's live auction (buy). Sell a stake the company
+        holds in another company back onto the market, or sell down its own capital for outside crypto
+        (sell). Move any other asset the company holds. All of it — on-chain, visible, and only for the
+        length of one term.
+      </Section>
+
+      <Section title="7. Every term ends with a mandatory vote">
+        Once a governor's term is over, every shareholder votes: pay out 1% of the company's capital as a
+        dividend, or leave it invested. Simple majority decides — this happens automatically, regardless of
+        what the outgoing governor chose to do during their term.
+      </Section>
+
+      <Section title="8. Joining after the fact means buying in — never for free">
+        Anyone who wasn't a citizen during the original privatization has no path to a free allocation.
+        Their only way in is buying spare INVEST from a citizen or a company treasury, paid for in an
+        approved crypto asset. There is no fiat on-ramp anywhere in this system — no bank transfer, no card
+        payment, nothing pegged to a government currency by design.
+      </Section>
+
+      <Section title="What this demo simplifies">
+        This playable version compresses governance into a single instant choice per company, for pace. The
+        real, deployed contracts implement everything above in full: candidacy, runoff rounds, rotating
+        operating keys, the end-of-term policy vote, and the INVEST secondary market. If you deploy the
+        contracts yourself, that's the version that actually runs.
+      </Section>
+
+      <button
+        onClick={onEnter}
+        className="mono"
+        style={{ background: "#EDE6D6", color: "#1C1A16", border: "none", padding: "12px 28px", borderRadius: 3, fontWeight: 700, cursor: "pointer", fontSize: 13, letterSpacing: 0.5, marginTop: 8 }}
+      >
+        ENTER THE EXCHANGE
+      </button>
     </div>
   );
 }

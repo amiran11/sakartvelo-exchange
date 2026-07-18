@@ -4,6 +4,12 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
+/// @dev Minimal interface into ShareAuction — avoids a circular import
+/// (ShareAuction already imports InvestToken to hold a reference back).
+interface IShareAuction {
+    function privatizationConcluded() external view returns (bool);
+}
+
 /// @title InvestToken
 /// @notice A closed-loop, non-transferable ERC-20. Every wallet can claim one
 /// equal allocation. It can only be spent into the ShareAuction contract —
@@ -11,10 +17,28 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 /// mirrors the white paper's rule that "Invest" cannot be cashed out, only
 /// used to bid for shares.
 contract InvestToken is ERC20, Ownable {
+    /// @notice This is a fictional virtual-state simulation. Any resemblance
+    /// to real countries, governments, companies, agencies, or assets is
+    /// fictional and exists solely as a gamified rule-set. Nothing here is a
+    /// real financial product, security, or claim on any real-world asset.
+    string public constant DISCLAIMER = "FICTIONAL SIMULATION. Not a real financial product, security, or claim on any real-world asset. Any resemblance to real entities is a gamified rule-set only.";
+
     uint256 public constant CITIZEN_ALLOCATION = 1000 * 10 ** 18;
 
     mapping(address => bool) public claimed;
     address public auctionHouse;
+
+    /// @notice Hard ceiling on how many allocations can ever be minted,
+    /// independent of the verification gate below. verifiedCitizen only
+    /// stops unverified addresses from claiming — nothing stops the owner
+    /// (or whoever controls that mapping) from verifying more addresses
+    /// than there are real citizens, whether by mistake or not. This cap is
+    /// the backstop: total emission can never exceed maxCitizens *
+    /// CITIZEN_ALLOCATION, full stop, regardless of how verification is
+    /// run. In a real deployment this would be set to the actual eligible
+    /// population (e.g. Georgia's citizen count), not left unbounded.
+    uint256 public maxCitizens;
+    uint256 public citizenCount;
 
     /// @dev On-chain code cannot tell whether two wallets belong to the same
     /// human — that's the fundamental sybil problem. This gate doesn't solve
@@ -35,8 +59,22 @@ contract InvestToken is ERC20, Ownable {
     event AuctionHouseSet(address indexed auctionHouse);
     event AuthorizedSinkSet(address indexed account, bool allowed);
     event CitizenVerified(address indexed citizen, bool verified);
+    event MaxCitizensSet(uint256 newMax);
 
-    constructor() ERC20("Invest", "INVEST") Ownable(msg.sender) {}
+    constructor(uint256 _maxCitizens) ERC20("Invest", "INVEST") Ownable(msg.sender) {
+        maxCitizens = _maxCitizens;
+        emit MaxCitizensSet(_maxCitizens);
+    }
+
+    /// @notice Can be raised or lowered later, but never below citizenCount —
+    /// existing allocations are never invalidated by tightening the cap.
+    /// Changing this is a public, on-chain event; there's no silent way to
+    /// inflate the emission ceiling.
+    function setMaxCitizens(uint256 newMax) external onlyOwner {
+        require(newMax >= citizenCount, "InvestToken: below current citizen count");
+        maxCitizens = newMax;
+        emit MaxCitizensSet(newMax);
+    }
 
     function setVerifiedCitizen(address citizen, bool verified) external onlyOwner {
         verifiedCitizen[citizen] = verified;
@@ -51,14 +89,24 @@ contract InvestToken is ERC20, Ownable {
     }
 
     /// @notice One-time equal allocation per wallet, gated to verified
-    /// citizens only. This stops the trivial version of sybil farming
-    /// (spin up N unverified wallets, claim N allocations) — it does not
-    /// stop a verified individual who controls multiple verified identities,
-    /// which is exactly the harder, unsolved half of the problem.
+    /// citizens only, capped at maxCitizens total, and only while the state
+    /// still has shares left to sell (ShareAuction.privatizationConcluded()
+    /// is false). Both caps apply — maxCitizens is a hard number ceiling
+    /// independent of the process; the privatization check ties emission to
+    /// whether there's still anything to bid on, matching the white paper's
+    /// rule that Invest is distributed "until the privatization process is
+    /// concluded." Before auctionHouse is set, or before any company has
+    /// been listed, this check is skipped — citizens can claim ahead of the
+    /// first auction opening.
     function claim() external {
         require(verifiedCitizen[msg.sender], "InvestToken: not a verified citizen");
         require(!claimed[msg.sender], "InvestToken: already claimed");
+        require(citizenCount < maxCitizens, "InvestToken: emission cap reached");
+        if (auctionHouse != address(0)) {
+            require(!IShareAuction(auctionHouse).privatizationConcluded(), "InvestToken: privatization concluded, no new allocations");
+        }
         claimed[msg.sender] = true;
+        citizenCount++;
         _mint(msg.sender, CITIZEN_ALLOCATION);
         emit Claimed(msg.sender, CITIZEN_ALLOCATION);
     }
