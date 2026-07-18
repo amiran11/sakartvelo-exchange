@@ -117,55 +117,29 @@ contract ShareAuction is ERC721, Ownable {
     mapping(uint256 => address) public governorOperatingKey;
 
     /// @notice A mandatory shareholder vote that runs once a governor's term
-    /// is over: distribute 1% of the company's capital as a dividend, or
-    /// leave it in the treasury ("reinvest" — capital simply stays put for
-    /// the next governor to actively deploy, rather than this vote
-    /// triggering any specific purchase itself). Indexed by term number so
-    /// history survives startNewTerm() resetting the election state.
-    uint256 public constant POLICY_VOTE_WINDOW = 3 days;
-    uint256 public constant TERM_END_DIVIDEND_BPS = 100; // 1%
+    /// is over (1% dividend or reinvest) lives in CompanyTreasury now, along
+    /// with multi-asset custody, the treasury commit-reveal auction, the
+    /// vendor payment vote, and the INVEST secondary market — all split out
+    /// purely because this contract's deployed bytecode exceeded Ethereum's
+    /// 24,576-byte limit (EIP-170) once that functionality lived here too.
+    /// ShareAuction still archives when each term ended (below), since
+    /// CompanyTreasury's policy vote needs that timestamp and only
+    /// ShareAuction knows it (it's set the moment the next governor is
+    /// installed, in _installGovernor).
     mapping(uint256 => mapping(uint256 => uint256)) public termEndedAt; // companyId => term => when that term's governorTermEnd was
-    mapping(uint256 => mapping(uint256 => uint256)) public policyVoteEnd; // companyId => term => deadline, 0 = not opened
-    mapping(uint256 => mapping(uint256 => bool)) public policyResolved;
-    mapping(uint256 => mapping(uint256 => mapping(address => bool))) public policyHasVoted;
-    mapping(uint256 => mapping(uint256 => uint256)) public policyDividendWeight;
-    mapping(uint256 => mapping(uint256 => uint256)) public policyReinvestWeight;
 
-    /// @notice What a company holds beyond INVEST — deposited ERC-20s the
-    /// governor can move, the "hold other crypto asset wallets" piece.
-    mapping(uint256 => mapping(address => uint256)) public companyTokenBalance; // companyId => ERC20 token => balance
+    /// @notice The only contract allowed to move a company's INVEST capital
+    /// on CompanyTreasury's behalf (dividends, treasury auction proceeds,
+    /// vendor payments, the INVEST market) — set once after deploying
+    /// CompanyTreasury. Everything else that touches `capital` (invest(),
+    /// governorListShare(), the primary auction's 99% split) still does so
+    /// directly, since it never left this contract.
+    address public treasury;
 
-    /// @notice Tokens accepted as payment for INVEST itself on the secondary
-    /// market below — this is how anyone who wasn't a citizen during the
-    /// original privatization acquires INVEST at all, since claim() is
-    /// closed to them. Deliberately never the INVEST token, and never a
-    /// direct fiat rail (there's no bank/card path anywhere in this
-    /// contract). What counts as "not secretly fiat-pegged" in spirit is a
-    /// judgment call the owner makes when approving a token address —
-    /// Solidity has no way to inspect what a given ERC-20 economically
-    /// represents, so this whitelist is a policy decision, not a guarantee
-    /// the code can enforce on its own.
-    mapping(address => bool) public approvedPaymentTokens;
-
-    /// @notice A citizen or a company treasury offering some of its INVEST
-    /// for sale, priced in an approved ERC-20.
-    struct InvestOffer {
-        address seller; // citizen wallet, or corporateHolder(companyId) if isCorporateOffer
-        uint256 investAmount;
-        address paymentToken;
-        uint256 paymentAmount;
-        bool active;
-        bool isCorporateOffer;
-        uint256 creditCompanyId; // meaningful only when isCorporateOffer is true
-    }
-    mapping(uint256 => InvestOffer) public investOffers;
-    uint256 public nextInvestOfferId;
-
-    /// @notice Post-lock secondary market. A citizen who owns a share can
-    /// list it; anyone can buy it for INVEST. This is the "sell" side that
-    /// was missing entirely — invest() lets a governor buy into another
-    /// company, but until now there was no way to sell out of a position at
-    /// all, by a citizen or by an organization.
+    /// @notice Post-lock secondary market for Share NFTs. A citizen who
+    /// owns a share can list it; anyone can buy it for INVEST. Stays here
+    /// (rather than moving to CompanyTreasury with everything else) because
+    /// it moves actual NFTs, which only this ERC-721 contract can do.
     struct Listing {
         uint256 tokenId;
         address seller;
@@ -189,24 +163,40 @@ contract ShareAuction is ERC721, Ownable {
     event GovernorElected(uint256 indexed companyId, address indexed governor, uint256 winningVotes, uint256 termEnd);
     event NewTermStarted(uint256 indexed companyId);
     event OperatingKeySet(uint256 indexed companyId, address indexed governor, address indexed operatingKey);
-    event PolicyVoteOpened(uint256 indexed companyId, uint256 indexed term, uint256 voteEnd);
-    event PolicyVoted(uint256 indexed companyId, uint256 indexed term, address indexed voter, bool wantsDividend, uint256 weight);
-    event PolicyResolved(uint256 indexed companyId, uint256 indexed term, bool distributedDividend, uint256 amount);
-    event InvestOffered(uint256 indexed offerId, address indexed seller, uint256 investAmount, address paymentToken, uint256 paymentAmount);
-    event InvestSold(uint256 indexed offerId, address seller, address indexed buyer, uint256 investAmount, address paymentToken, uint256 paymentAmount);
-    event InvestOfferCancelled(uint256 indexed offerId);
-    event PaymentTokenApprovalSet(address indexed token, bool approved);
+    event TreasurySet(address indexed treasury);
     event CorporateInvestment(uint256 indexed fromCompanyId, uint256 indexed toCompanyId, uint256 amount);
-    event DividendDistributed(uint256 indexed companyId, uint256 totalAmount);
     event ShareListed(uint256 indexed listingId, uint256 indexed tokenId, address indexed seller, uint256 price);
     event ShareSold(uint256 indexed listingId, uint256 indexed tokenId, address seller, address buyer, uint256 price);
     event ListingCancelled(uint256 indexed listingId);
-    event TokenDeposited(uint256 indexed companyId, address indexed token, address indexed from, uint256 amount);
-    event TokenWithdrawn(uint256 indexed companyId, address indexed token, address indexed to, uint256 amount);
 
     constructor(address _investToken) ERC721("Sovereign Share", "SHARE") Ownable(msg.sender) {
         investToken = InvestToken(_investToken);
         host = msg.sender;
+    }
+
+    function setTreasury(address _treasury) external onlyOwner {
+        require(_treasury != address(0), "ShareAuction: zero address");
+        treasury = _treasury;
+        emit TreasurySet(_treasury);
+    }
+
+    modifier onlyTreasury() {
+        require(msg.sender == treasury, "ShareAuction: not treasury");
+        _;
+    }
+
+    /// @notice The only way a company's INVEST capital changes from outside
+    /// this contract — restricted to the registered CompanyTreasury address.
+    /// A positive delta credits capital (auction/vendor-payment proceeds); a
+    /// negative one debits it (dividends, buying INVEST market offers).
+    function adjustCapital(uint256 companyId, int256 delta) external onlyTreasury {
+        if (delta >= 0) {
+            companies[companyId].capital += uint256(delta);
+        } else {
+            uint256 dec = uint256(-delta);
+            require(companies[companyId].capital >= dec, "ShareAuction: capital underflow");
+            companies[companyId].capital -= dec;
+        }
     }
 
     function setHost(address _host) external onlyOwner {
@@ -487,75 +477,7 @@ contract ShareAuction is ERC721, Ownable {
         emit NewTermStarted(companyId);
     }
 
-    /// @notice Opens the mandatory post-term policy vote for a given term
-    /// number. Works whether or not startNewTerm() has already reset the
-    /// live governorTermEnd for a newer term — termEndedAt archives the
-    /// timestamp automatically the moment the NEXT governor is installed,
-    /// so this stays callable long after the fact.
-    function openPolicyVote(uint256 companyId, uint256 term) external {
-        require(term > 0 && term <= termNumber[companyId], "ShareAuction: invalid term");
-        uint256 endedAt = termEndedAt[companyId][term];
-        if (endedAt == 0 && term == termNumber[companyId]) {
-            require(block.timestamp >= governorTermEnd[companyId], "ShareAuction: term not over yet");
-            endedAt = governorTermEnd[companyId];
-        }
-        require(endedAt != 0, "ShareAuction: term not concluded");
-        require(policyVoteEnd[companyId][term] == 0, "ShareAuction: already opened");
-        require(companies[companyId].sharesIssued > 0, "ShareAuction: no shares issued");
-        policyVoteEnd[companyId][term] = block.timestamp + POLICY_VOTE_WINDOW;
-        emit PolicyVoteOpened(companyId, term, policyVoteEnd[companyId][term]);
-    }
-
-    /// @notice Every shareholder gets one vote per term, weighted by shares
-    /// held, choosing dividend or reinvest. Simple majority of votes cast —
-    /// unlike the governor election, this isn't a runoff, just a binary
-    /// choice. A tie (including nobody voting at all) defaults to reinvest.
-    function votePolicy(uint256 companyId, uint256 term, bool wantsDividend) external {
-        require(policyVoteEnd[companyId][term] != 0 && block.timestamp < policyVoteEnd[companyId][term], "ShareAuction: voting not open");
-        require(!policyHasVoted[companyId][term][msg.sender], "ShareAuction: already voted");
-        uint256 weight = companyShareCount[companyId][msg.sender];
-        require(weight > 0, "ShareAuction: not a shareholder");
-        policyHasVoted[companyId][term][msg.sender] = true;
-        if (wantsDividend) {
-            policyDividendWeight[companyId][term] += weight;
-        } else {
-            policyReinvestWeight[companyId][term] += weight;
-        }
-        emit PolicyVoted(companyId, term, msg.sender, wantsDividend, weight);
-    }
-
-    /// @notice Executes the outcome. If "dividend" wins, exactly 1% of the
-    /// company's current capital is distributed pro-rata to the supplied
-    /// holder list (see distribute() for why the caller has to supply the
-    /// list — Solidity can't enumerate "everyone who holds a share" on its
-    /// own). If "reinvest" wins or it's a tie, nothing moves — the capital
-    /// stays in the treasury for the next governor to actively deploy.
-    function resolvePolicyVote(uint256 companyId, uint256 term, address[] calldata holders) external {
-        require(policyVoteEnd[companyId][term] != 0, "ShareAuction: not opened");
-        require(block.timestamp >= policyVoteEnd[companyId][term], "ShareAuction: voting still open");
-        require(!policyResolved[companyId][term], "ShareAuction: already resolved");
-        policyResolved[companyId][term] = true;
-
-        if (policyDividendWeight[companyId][term] > policyReinvestWeight[companyId][term]) {
-            Company storage c = companies[companyId];
-            uint256 amount = (c.capital * TERM_END_DIVIDEND_BPS) / 10_000;
-            if (amount > 0 && c.sharesIssued > 0) {
-                c.capital -= amount;
-                for (uint256 i = 0; i < holders.length; i++) {
-                    uint256 held = companyShareCount[companyId][holders[i]];
-                    if (held == 0) continue;
-                    uint256 cut = (amount * held) / c.sharesIssued;
-                    if (cut > 0) investToken.transfer(holders[i], cut);
-                }
-                emit DividendDistributed(companyId, amount);
-            }
-            emit PolicyResolved(companyId, term, true, amount);
-        } else {
-            emit PolicyResolved(companyId, term, false, 0);
-        }
-    }
-
-
+    /// @dev Checks the term's registered OPERATING KEY, not the elected
     /// officeholder's personal wallet — that's the whole point of
     /// setOperatingKey(). Before a governor has set one (right after
     /// election, or if they never bother to), operatingKey is address(0)
@@ -579,53 +501,6 @@ contract ShareAuction is ERC721, Ownable {
         address corpBidder = corporateHolder(fromCompanyId);
         bids[toCompanyId].push(Bid(corpBidder, amount));
         emit CorporateInvestment(fromCompanyId, toCompanyId, amount);
-    }
-
-    /// @notice SELL / liquidate: the governor pays capital back out to a
-    /// given list of current shareholders, pro-rata to shares held. Solidity
-    /// can't iterate "everyone who holds a share" on its own, so the caller
-    /// supplies the holder list (e.g. from off-chain indexing of Transfer
-    /// events) — anyone not included simply isn't paid this round.
-    function distribute(uint256 companyId, address[] calldata holders, uint256 amount) external onlyGovernor(companyId) {
-        Company storage c = companies[companyId];
-        require(c.capital >= amount, "ShareAuction: insufficient capital");
-        require(c.sharesIssued > 0, "ShareAuction: no shares issued");
-        c.capital -= amount;
-        for (uint256 i = 0; i < holders.length; i++) {
-            uint256 held = companyShareCount[companyId][holders[i]];
-            if (held == 0) continue;
-            uint256 cut = (amount * held) / c.sharesIssued;
-            if (cut > 0) investToken.transfer(holders[i], cut);
-        }
-        emit DividendDistributed(companyId, amount);
-    }
-
-    // ---------------------------------------------------------------------
-    // Beyond INVEST: a company can hold other ERC-20 assets too — a grant,
-    // a real-world settlement, proceeds routed in from off-chain. The
-    // governor decides what leaves and where it goes, same "exchange
-    // organization balance assets for other assets" principle as
-    // invest()/governorListShare(), just generalized past INVEST itself.
-    // ---------------------------------------------------------------------
-
-    /// @notice Anyone can deposit any ERC-20 into a company's treasury.
-    /// Requires this contract to already be approved for `amount`.
-    function depositToken(uint256 companyId, address token, uint256 amount) external {
-        require(companies[companyId].totalShares > 0, "ShareAuction: unknown company");
-        require(amount > 0, "ShareAuction: amount must be > 0");
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        companyTokenBalance[companyId][token] += amount;
-        emit TokenDeposited(companyId, token, msg.sender, amount);
-    }
-
-    /// @notice Governor-only: move any ERC-20 the company holds to any
-    /// address — a DEX router for a real swap, a vendor for a real-world
-    /// purchase, or anywhere else the elected governor decides.
-    function withdrawToken(uint256 companyId, address token, address to, uint256 amount) external onlyGovernor(companyId) {
-        require(companyTokenBalance[companyId][token] >= amount, "ShareAuction: insufficient balance");
-        companyTokenBalance[companyId][token] -= amount;
-        IERC20(token).safeTransfer(to, amount);
-        emit TokenWithdrawn(companyId, token, to, amount);
     }
 
     // ---------------------------------------------------------------------
@@ -703,79 +578,5 @@ contract ShareAuction is ERC721, Ownable {
     /// company's governance too, just like a real parent/subsidiary stake.
     function corporateHolder(uint256 companyId) public pure returns (address) {
         return address(uint160(uint256(keccak256(abi.encodePacked("SOVEREIGN_LOTS_CORP", companyId)))));
-    }
-
-    // ---------------------------------------------------------------------
-    // INVEST secondary market. Citizenship — the free 1000 INVEST allocation
-    // — belongs only to whoever was verified and claimed during the original
-    // privatization. Anyone joining later has no path to claim() and no way
-    // to receive INVEST as a gift (the closed-loop rule blocks that too).
-    // This is their actual on-ramp: buy leftover INVEST from a citizen who
-    // has some spare, or from a company's own treasury, paid for in an
-    // approved crypto asset — never fiat, and never a fresh free allocation.
-    // ---------------------------------------------------------------------
-
-    function setApprovedPaymentToken(address token, bool approved) external onlyOwner {
-        require(token != address(investToken), "ShareAuction: INVEST itself can't be a payment token");
-        approvedPaymentTokens[token] = approved;
-        emit PaymentTokenApprovalSet(token, approved);
-    }
-
-    /// @notice A citizen offers some of their own INVEST for sale. The
-    /// offered amount is escrowed into this contract immediately (a normal
-    /// citizen-to-auction-house transfer, already allowed by InvestToken's
-    /// closed-loop rule) so a buyer can trust the offer is real.
-    function offerInvest(uint256 investAmount, address paymentToken, uint256 paymentAmount) external {
-        require(approvedPaymentTokens[paymentToken], "ShareAuction: payment token not approved");
-        require(investAmount > 0 && paymentAmount > 0, "ShareAuction: amounts must be > 0");
-        investToken.transferFrom(msg.sender, address(this), investAmount);
-        investOffers[nextInvestOfferId] = InvestOffer(msg.sender, investAmount, paymentToken, paymentAmount, true, false, 0);
-        emit InvestOffered(nextInvestOfferId, msg.sender, investAmount, paymentToken, paymentAmount);
-        nextInvestOfferId++;
-    }
-
-    /// @notice The governor equivalent: sells some of the COMPANY's held
-    /// INVEST capital for an approved ERC-20, which then becomes part of
-    /// the company's token treasury (companyTokenBalance) instead of going
-    /// to any individual — this is a company literally raising outside
-    /// crypto capital by selling down its own INVEST position.
-    function governorOfferInvest(uint256 companyId, uint256 investAmount, address paymentToken, uint256 paymentAmount) external onlyGovernor(companyId) {
-        require(approvedPaymentTokens[paymentToken], "ShareAuction: payment token not approved");
-        require(investAmount > 0 && paymentAmount > 0, "ShareAuction: amounts must be > 0");
-        Company storage c = companies[companyId];
-        require(c.capital >= investAmount, "ShareAuction: insufficient capital");
-        c.capital -= investAmount;
-        address corp = corporateHolder(companyId);
-        investOffers[nextInvestOfferId] = InvestOffer(corp, investAmount, paymentToken, paymentAmount, true, true, companyId);
-        emit InvestOffered(nextInvestOfferId, corp, investAmount, paymentToken, paymentAmount);
-        nextInvestOfferId++;
-    }
-
-    function buyInvest(uint256 offerId) external {
-        InvestOffer storage o = investOffers[offerId];
-        require(o.active, "ShareAuction: not active");
-        o.active = false;
-        if (o.isCorporateOffer) {
-            IERC20(o.paymentToken).safeTransferFrom(msg.sender, address(this), o.paymentAmount);
-            companyTokenBalance[o.creditCompanyId][o.paymentToken] += o.paymentAmount;
-        } else {
-            IERC20(o.paymentToken).safeTransferFrom(msg.sender, o.seller, o.paymentAmount);
-        }
-        investToken.transfer(msg.sender, o.investAmount);
-        emit InvestSold(offerId, o.seller, msg.sender, o.investAmount, o.paymentToken, o.paymentAmount);
-    }
-
-    function cancelInvestOffer(uint256 offerId) external {
-        InvestOffer storage o = investOffers[offerId];
-        require(o.active, "ShareAuction: not active");
-        o.active = false;
-        if (o.isCorporateOffer) {
-            require(msg.sender == governorOperatingKey[o.creditCompanyId], "ShareAuction: not the current operating key");
-            companies[o.creditCompanyId].capital += o.investAmount;
-        } else {
-            require(msg.sender == o.seller, "ShareAuction: not seller");
-            investToken.transfer(o.seller, o.investAmount);
-        }
-        emit InvestOfferCancelled(offerId);
     }
 }

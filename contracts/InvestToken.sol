@@ -123,17 +123,22 @@ contract InvestToken is ERC20, Ownable {
     }
 
     /// @dev The closed loop only restricts citizens spending their own
-    /// balance: it must go to the auction house, nothing else — that's what
-    /// stops a citizen reselling their free allocation for cash. It does NOT
-    /// restrict the auction house paying money back out (bid refunds,
-    /// governor-issued dividends, host fee withdrawals) since that's the
-    /// system distributing funds it legitimately collected, not a citizen
-    /// cashing out their voucher.
+    /// balance: it must go to the auction house or an authorized sink,
+    /// nothing else — that's what stops a citizen reselling their free
+    /// allocation for cash. It does NOT restrict the auction house or an
+    /// authorized sink (e.g. CompanyTreasury) paying money back out (bid
+    /// refunds, governor-issued dividends, treasury auction proceeds, host
+    /// fee withdrawals) since that's the system distributing funds it
+    /// legitimately collected, not a citizen cashing out their voucher.
+    /// authorizedSink is checked symmetrically on both `to` and `from` for
+    /// exactly this reason — a trusted contract like CompanyTreasury needs
+    /// to both receive citizen payments (bids, INVEST-market purchases) and
+    /// pay citizens back out (refunds, dividends) from the same address.
     function _update(address from, address to, uint256 value) internal override {
         if (from != address(0) && to != address(0)) {
-            bool citizenSpendingIn = (to == auctionHouse);
-            bool systemPayingOut = (from == auctionHouse) || authorizedSink[to];
-            require(citizenSpendingIn || systemPayingOut, "InvestToken: closed loop - citizens may only spend INVEST into the auction house");
+            bool citizenSpendingIn = (to == auctionHouse) || authorizedSink[to];
+            bool systemPayingOut = (from == auctionHouse) || authorizedSink[from];
+            require(citizenSpendingIn || systemPayingOut, "InvestToken: closed loop - citizens may only spend INVEST into the auction house or an authorized sink");
         }
         super._update(from, to, value);
     }
