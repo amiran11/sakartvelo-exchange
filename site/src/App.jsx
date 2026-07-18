@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { Wallet } from "ethers";
 import {
   Landmark, Pickaxe, Flame, Layers, TreePine, Gavel, Train, Factory, Zap, Anchor, Mountain, Ship,
-  TrendingUp, TrendingDown, Trophy, Wallet as WalletIcon, Clock, Hash, RotateCcw
+  TrendingUp, TrendingDown, Trophy, Wallet as WalletIcon, Clock, Hash, RotateCcw,
+  Download, Eye, EyeOff, X, ShieldAlert
 } from "lucide-react";
 
 // "owned" = the state directly holds and operates the asset today.
@@ -73,6 +74,29 @@ function getOrCreateWallet() {
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 function fmt(n) { return Math.round(n).toLocaleString(); }
 
+// Saves address + private key to a JSON file the visitor keeps themselves —
+// this app has no server, so this download IS the only backup that will
+// ever exist. Lose it and clear localStorage, and the wallet (and anything
+// tied to it) is gone for good.
+function downloadWalletBackup(wallet) {
+  const payload = {
+    warning: "KEEP THIS FILE PRIVATE. Anyone who has this private key fully controls this wallet and everything it owns. Sakartvelo Exchange has no server and no account recovery — if you lose both this file and your browser's local storage, access is gone permanently.",
+    app: "Sakartvelo Exchange (fictional simulation)",
+    address: wallet.address,
+    privateKey: wallet.privateKey,
+    exportedAt: new Date().toISOString(),
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `sakartvelo-wallet-${wallet.address.slice(2, 8)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 // A company's elected governor spends its capital pool: REINVEST ("buy" —
 // modernize, raising the company's underlying value), DIVIDEND ("sell" —
 // liquidate capital straight back to current shareholders, pro-rata), or
@@ -140,6 +164,7 @@ export default function App() {
   const [governanceEndsAt, setGovernanceEndsAt] = useState(null);
   const [tradingEndsAt, setTradingEndsAt] = useState(null);
   const [mintPopup, setMintPopup] = useState(null);
+  const [showExport, setShowExport] = useState(false);
   const wallet = useState(() => getOrCreateWallet())[0];
   const tickRef = useRef(null);
 
@@ -346,9 +371,15 @@ export default function App() {
           <div className="mono" style={{ fontSize: 11, opacity: 0.55, letterSpacing: 1 }}>A STATE-ASSET AUCTION SIMULATION</div>
         </div>
         <div className="flex items-center gap-4">
-          <div className="mono" style={{ fontSize: 11, opacity: 0.6 }} title={wallet.address}>
+          <button
+            onClick={() => setShowExport(true)}
+            className="mono flex items-center gap-1.5"
+            title="Export this wallet's address and private key"
+            style={{ fontSize: 11, opacity: 0.6, background: "none", border: "none", cursor: "pointer", color: "inherit", padding: 0 }}
+          >
+            <Download size={11} />
             {wallet.address.slice(0, 6)}…{wallet.address.slice(-4)}
-          </div>
+          </button>
           {(phase === "auction" || phase === "governance" || phase === "trading" || phase === "end") && (
             <div className="mono flex items-center gap-1.5" style={{ fontSize: 11, opacity: 0.55 }} title="1% of every winning bid, off the top">
               <Hash size={11} /> host take {fmt(game.hostTake)}
@@ -397,6 +428,8 @@ export default function App() {
       )}
 
       {mintPopup && <MintPopup data={mintPopup} />}
+
+      {showExport && <WalletExportModal wallet={wallet} onClose={() => setShowExport(false)} />}
 
       <div className="px-6 py-4 mono" style={{ fontSize: 11, opacity: 0.45, borderTop: "1px solid rgba(237,230,214,0.1)" }}>
         Every player starts with an equal INVEST allocation and no way to cash it out except by bidding.
@@ -731,6 +764,100 @@ function MintPopup({ data }) {
           {fmt(data.capitalCut)} → company capital<br />
           {fmt(data.hostCut)} → host
         </div>
+      </div>
+    </div>
+  );
+}
+
+function WalletExportModal({ wallet, onClose }) {
+  const [revealed, setRevealed] = useState(false);
+  const [copied, setCopied] = useState(null);
+
+  const copy = async (label, text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(label);
+      setTimeout(() => setCopied(null), 1500);
+    } catch {
+      // clipboard API unavailable — the field's still selectable by hand
+    }
+  };
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+      onClick={onClose}
+    >
+      <div
+        className="perforated"
+        style={{ background: "#EDE6D6", color: "#1C1A16", borderRadius: 4, padding: "28px 30px", maxWidth: 460, width: "100%", boxShadow: "0 12px 30px rgba(0,0,0,0.45)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between" style={{ marginBottom: 14 }}>
+          <div className="flex items-center gap-2">
+            <WalletIcon size={18} />
+            <div className="zilla" style={{ fontSize: 18, fontWeight: 700 }}>Export Wallet</div>
+          </div>
+          <button onClick={onClose} className="mono" style={{ background: "none", border: "none", cursor: "pointer", opacity: 0.6 }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <div style={{ background: "rgba(201,138,62,0.15)", border: "1px solid #C98A3E", borderRadius: 4, padding: "12px 14px", marginBottom: 18 }}>
+          <div className="mono flex items-center gap-1.5" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: "#9A5B1E", marginBottom: 4 }}>
+            <ShieldAlert size={13} /> KEEP THIS SAFE
+          </div>
+          <div style={{ fontSize: 12.5, lineHeight: 1.55, opacity: 0.85 }}>
+            This private key is the only way into this wallet and everything tied to it — your INVEST
+            balance and any shares you've won. It currently lives only in this browser's storage. If you
+            clear site data, switch browsers, or move to a new device without saving this,{" "}
+            <strong>you lose access permanently — there is no recovery.</strong> Store the downloaded file
+            somewhere private and never share it with anyone.
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <div className="mono" style={{ fontSize: 10, opacity: 0.55, letterSpacing: 0.5, marginBottom: 4 }}>PUBLIC ADDRESS</div>
+          <div
+            className="mono"
+            onClick={() => copy("address", wallet.address)}
+            title="Click to copy"
+            style={{ fontSize: 12, wordBreak: "break-all", background: "rgba(28,26,22,0.06)", borderRadius: 3, padding: "8px 10px", cursor: "pointer" }}
+          >
+            {wallet.address}
+          </div>
+          {copied === "address" && <div className="mono" style={{ fontSize: 10, opacity: 0.6, marginTop: 3 }}>Copied</div>}
+        </div>
+
+        <div style={{ marginBottom: 20 }}>
+          <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+            <div className="mono" style={{ fontSize: 10, opacity: 0.55, letterSpacing: 0.5 }}>PRIVATE KEY</div>
+            <button
+              onClick={() => setRevealed(r => !r)}
+              className="mono flex items-center gap-1"
+              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, opacity: 0.6 }}
+            >
+              {revealed ? <EyeOff size={12} /> : <Eye size={12} />} {revealed ? "hide" : "reveal"}
+            </button>
+          </div>
+          <div
+            className="mono"
+            onClick={() => revealed && copy("key", wallet.privateKey)}
+            title={revealed ? "Click to copy" : "Click reveal first"}
+            style={{ fontSize: 12, wordBreak: "break-all", background: "rgba(28,26,22,0.06)", borderRadius: 3, padding: "8px 10px", cursor: revealed ? "pointer" : "default" }}
+          >
+            {revealed ? wallet.privateKey : "•".repeat(64)}
+          </div>
+          {copied === "key" && <div className="mono" style={{ fontSize: 10, opacity: 0.6, marginTop: 3 }}>Copied</div>}
+        </div>
+
+        <button
+          onClick={() => downloadWalletBackup(wallet)}
+          className="mono flex items-center justify-center gap-2"
+          style={{ width: "100%", background: "#1C1A16", color: "#EDE6D6", border: "none", padding: "11px 0", borderRadius: 3, fontWeight: 700, cursor: "pointer", fontSize: 13, letterSpacing: 0.5 }}
+        >
+          <Download size={14} /> DOWNLOAD WALLET BACKUP
+        </button>
       </div>
     </div>
   );
