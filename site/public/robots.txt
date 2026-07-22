@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://sakartvelo-exchange.vercel.app/sitemap.xml

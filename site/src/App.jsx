@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback, createContext, useContext } from "react";
-import { Wallet } from "ethers";
 import {
   Landmark, Pickaxe, Flame, Layers, TreePine, Gavel, Train, Factory, Zap, Anchor, Mountain, Ship,
   TrendingUp, TrendingDown, Trophy, Wallet as WalletIcon, Clock, Hash, RotateCcw, Languages
@@ -219,7 +218,8 @@ function serial(assetId) {
   return assetId.toUpperCase() + "-" + Math.random().toString(16).slice(2, 8).toUpperCase();
 }
 
-function getOrCreateWallet() {
+async function getOrCreateWallet() {
+  const { Wallet } = await import("ethers");
   try {
     const savedKey = window.localStorage.getItem("sakartvelo_wallet_pk");
     if (savedKey) return new Wallet(savedKey);
@@ -302,8 +302,14 @@ export default function App() {
   const [governanceEndsAt, setGovernanceEndsAt] = useState(null);
   const [tradingEndsAt, setTradingEndsAt] = useState(null);
   const [mintPopup, setMintPopup] = useState(null);
-  const wallet = useState(() => getOrCreateWallet())[0];
+  const [wallet, setWallet] = useState(null);
   const tickRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getOrCreateWallet().then(w => { if (!cancelled) setWallet(w); });
+    return () => { cancelled = true; };
+  }, []);
 
   const resetGame = useCallback(() => {
     setGame(makeInitialState());
@@ -531,8 +537,8 @@ export default function App() {
           >
             {t("whitePaper")}
           </button>
-          <div className="mono" style={{ fontSize: 11, opacity: 0.6 }} title={wallet.address}>
-            {wallet.address.slice(0, 6)}…{wallet.address.slice(-4)}
+          <div className="mono" style={{ fontSize: 11, opacity: 0.6 }} title={wallet?.address || ""}>
+            {wallet ? `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}` : "···"}
           </div>
           {(phase === "auction" || phase === "governance" || phase === "trading" || phase === "end") && (
             <div className="mono flex items-center gap-1.5" style={{ fontSize: 11, opacity: 0.55 }} title={t("hostTakeTitle")}>
