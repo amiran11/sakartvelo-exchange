@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback, createContext, useContext } from "react";
-import { Wallet } from "ethers";
 import {
   Landmark, Pickaxe, Flame, Layers, TreePine, Gavel, Train, Factory, Zap, Anchor, Mountain, Ship,
   TrendingUp, TrendingDown, Trophy, Wallet as WalletIcon, Clock, Hash, RotateCcw, Languages,
@@ -248,7 +247,8 @@ function serial(assetId) {
   return assetId.toUpperCase() + "-" + Math.random().toString(16).slice(2, 8).toUpperCase();
 }
 
-function getOrCreateWallet() {
+async function getOrCreateWallet() {
+  const { Wallet } = await import("ethers");
   try {
     const savedKey = window.localStorage.getItem("sakartvelo_wallet_pk");
     if (savedKey) return new Wallet(savedKey);
@@ -355,8 +355,14 @@ export default function App() {
   const [tradingEndsAt, setTradingEndsAt] = useState(null);
   const [mintPopup, setMintPopup] = useState(null);
   const [showExport, setShowExport] = useState(false);
-  const wallet = useState(() => getOrCreateWallet())[0];
+  const [wallet, setWallet] = useState(null);
   const tickRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getOrCreateWallet().then(w => { if (!cancelled) setWallet(w); });
+    return () => { cancelled = true; };
+  }, []);
 
   const resetGame = useCallback(() => {
     setGame(makeInitialState());
@@ -585,13 +591,14 @@ export default function App() {
             {t("whitePaper")}
           </button>
           <button
-            onClick={() => setShowExport(true)}
+            onClick={() => wallet && setShowExport(true)}
+            disabled={!wallet}
             className="mono flex items-center gap-1.5"
             title={t("walletExportButtonTitle")}
-            style={{ fontSize: 11, opacity: 0.6, background: "none", border: "none", cursor: "pointer", color: "inherit", padding: 0 }}
+            style={{ fontSize: 11, opacity: 0.6, background: "none", border: "none", cursor: wallet ? "pointer" : "default", color: "inherit", padding: 0 }}
           >
             <Download size={11} />
-            {wallet.address.slice(0, 6)}…{wallet.address.slice(-4)}
+            {wallet ? `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}` : "···"}
           </button>
           {(phase === "auction" || phase === "governance" || phase === "trading" || phase === "end") && (
             <div className="mono flex items-center gap-1.5" style={{ fontSize: 11, opacity: 0.55 }} title={t("hostTakeTitle")}>
