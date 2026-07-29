@@ -197,6 +197,14 @@ What this repo does:
     the treasury auction, INVEST-market purchases) and it can't pay
     refunds back out; both directions need it, which is why `_update`
     checks `authorizedSink` on both `to` and `from`.
+10b. Optional: `setVerifier(<backend wallet address>, true)` on `InvestToken`
+     if you're wiring up an automated verification backend (e.g. one that
+     calls a proof-of-personhood service and auto-verifies on a pass).
+     This role can ONLY call setVerifiedCitizen(s) — deliberately scoped
+     narrower than the owner key, so a compromised backend can wrongly
+     verify addresses but can't touch anything else (setAuctionHouse,
+     setAuthorizedSink, setMaxCitizens, ownership). Skip this entirely if
+     verification is staying manual, owner-only.
 11. Still on `InvestToken`, call `setVerifiedCitizen(<wallet>, true)` for
     every wallet that should be allowed to claim.
 12. **List every company you intend to privatize now, before anyone

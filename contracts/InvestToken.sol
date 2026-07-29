@@ -50,6 +50,22 @@ contract InvestToken is ERC20, Ownable {
     /// scheme can be farmed with throwaway addresses.
     mapping(address => bool) public verifiedCitizen;
 
+    /// @notice A narrow, limited role — can ONLY call setVerifiedCitizen(s),
+    /// nothing else. Exists specifically so an automated verification
+    /// backend (e.g. one that calls out to a proof-of-personhood service
+    /// and auto-verifies on a pass) can be given just enough power to do
+    /// its one job, without ever holding the owner key that controls
+    /// setAuctionHouse, setAuthorizedSink, setMaxCitizens, or ownership
+    /// itself. A compromised verifier key can wrongly verify addresses —
+    /// a real but bounded risk — and nothing worse than that.
+    mapping(address => bool) public verifier;
+    event VerifierSet(address indexed account, bool allowed);
+
+    modifier onlyOwnerOrVerifier() {
+        require(msg.sender == owner() || verifier[msg.sender], "InvestToken: not owner or verifier");
+        _;
+    }
+
     /// @dev INVEST is otherwise closed-loop. This whitelist is a narrow,
     /// explicit exception for specific withdrawable payouts (e.g. the host's
     /// 1% fee) beyond what the rule below already allows.
@@ -76,12 +92,17 @@ contract InvestToken is ERC20, Ownable {
         emit MaxCitizensSet(newMax);
     }
 
-    function setVerifiedCitizen(address citizen, bool verified) external onlyOwner {
+    function setVerifier(address account, bool allowed) external onlyOwner {
+        verifier[account] = allowed;
+        emit VerifierSet(account, allowed);
+    }
+
+    function setVerifiedCitizen(address citizen, bool verified) external onlyOwnerOrVerifier {
         verifiedCitizen[citizen] = verified;
         emit CitizenVerified(citizen, verified);
     }
 
-    function setVerifiedCitizens(address[] calldata citizens, bool verified) external onlyOwner {
+    function setVerifiedCitizens(address[] calldata citizens, bool verified) external onlyOwnerOrVerifier {
         for (uint256 i = 0; i < citizens.length; i++) {
             verifiedCitizen[citizens[i]] = verified;
             emit CitizenVerified(citizens[i], verified);
