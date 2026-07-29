@@ -14,6 +14,26 @@ export const CONTRACT_ADDRESSES = {
 
 export const SEPOLIA_CHAIN_ID = "0xaa36a7"; // 11155111 in hex, what MetaMask expects
 
+// Rough but reliable-enough mobile detection — good enough to decide
+// which error message and recovery path to show, not used for anything
+// security-sensitive.
+export function isMobileDevice() {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+// Opens the current page inside MetaMask's own in-app browser, which DOES
+// inject window.ethereum, unlike regular mobile Safari/Chrome. This is the
+// real fix for mobile — installing the MetaMask phone app alone does NOT
+// help unless the site is actually opened through this link.
+// Current official deep link format per MetaMask's own docs (verified
+// July 2026) — note this occasionally misbehaves on some phone/OS
+// combinations per MetaMask's own bug tracker, so it's the best available
+// path today, not a guaranteed one.
+export function getMetaMaskDeepLink() {
+  const host = window.location.host + window.location.pathname;
+  return `https://link.metamask.io/dapp/${host}`;
+}
+
 import InvestTokenABI from "./contracts/InvestToken.json";
 import ShareAuctionABI from "./contracts/ShareAuction.json";
 import CompanyTreasuryABI from "./contracts/CompanyTreasury.json";
@@ -34,8 +54,15 @@ async function getEthers() {
 // Requests MetaMask connection and switches/adds Sepolia if needed.
 export async function connectWallet() {
   if (!window.ethereum) {
+    if (isMobileDevice()) {
+      const err = new Error(
+        "No wallet browser detected. On mobile, MetaMask only works if this page is opened INSIDE the MetaMask app's own browser — having the MetaMask app installed isn't enough on its own."
+      );
+      err.isMobileNoWallet = true;
+      throw err;
+    }
     throw new Error(
-      "No wallet extension found. Install MetaMask (metamask.io) to connect a real wallet."
+      "No wallet extension found. Install MetaMask as a browser extension at metamask.io, then refresh this page."
     );
   }
 
