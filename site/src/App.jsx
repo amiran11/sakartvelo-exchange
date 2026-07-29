@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, createContext, useContext } from "react";
+import RealExchange from "./components/RealExchange.jsx";
 import {
   Landmark, Pickaxe, Flame, Layers, TreePine, Gavel, Train, Factory, Zap, Anchor, Mountain, Ship,
   TrendingUp, TrendingDown, Trophy, Wallet as WalletIcon, Clock, Hash, RotateCcw, Languages
@@ -502,6 +503,10 @@ export default function App() {
     );
   }
 
+  if (view === "real") {
+    return <RealExchange onBack={() => setView("game")} />;
+  }
+
   return (
     <LangContext.Provider value={langCtx}>
     <div style={{ fontFamily: "Inter, sans-serif", background: "linear-gradient(180deg,#141B18,#1B2622)", minHeight: "100%", color: "#EDE6D6" }}>
@@ -536,6 +541,13 @@ export default function App() {
             style={{ fontSize: 11, opacity: 0.6, letterSpacing: 0.5, background: "none", border: "none", color: "#EDE6D6", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 3 }}
           >
             {t("whitePaper")}
+          </button>
+          <button
+            onClick={() => setView("real")}
+            className="mono"
+            style={{ fontSize: 11, letterSpacing: 0.5, background: "rgba(201,138,62,0.15)", border: "1px solid #C98A3E", color: "#C98A3E", cursor: "pointer", padding: "6px 10px", borderRadius: 3 }}
+          >
+            LIVE ON SEPOLIA
           </button>
           <div className="mono" style={{ fontSize: 11, opacity: 0.6 }} title={wallet?.address || ""}>
             {wallet ? `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}` : "···"}
