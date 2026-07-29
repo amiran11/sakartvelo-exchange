@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Wallet as WalletIcon, ExternalLink, Loader2 } from "lucide-react";
-import { connectWallet, getClaimEligibility, claimReal, CONTRACT_ADDRESSES } from "../web3.js";
+import { connectWallet, getClaimEligibility, claimReal, CONTRACT_ADDRESSES, isMobileDevice, getMetaMaskDeepLink } from "../web3.js";
 
 // This screen talks to the REAL deployed contracts on Sepolia — not the
 // simulated game. Kept as its own component, deliberately separate from
@@ -10,11 +10,13 @@ export default function RealExchange({ onBack }) {
   const [eligibility, setEligibility] = useState(null);
   const [status, setStatus] = useState("idle"); // idle | connecting | checking | claiming | claimed | error
   const [errorMsg, setErrorMsg] = useState("");
+  const [isMobileWalletError, setIsMobileWalletError] = useState(false);
   const [txHash, setTxHash] = useState(null);
 
   const handleConnect = async () => {
     setStatus("connecting");
     setErrorMsg("");
+    setIsMobileWalletError(false);
     try {
       const w = await connectWallet();
       setWallet(w);
@@ -24,6 +26,7 @@ export default function RealExchange({ onBack }) {
       setStatus("idle");
     } catch (err) {
       setErrorMsg(err.message || "Connection failed.");
+      setIsMobileWalletError(!!err.isMobileNoWallet);
       setStatus("error");
     }
   };
@@ -66,15 +69,24 @@ export default function RealExchange({ onBack }) {
         </div>
 
         {!wallet ? (
-          <button
-            onClick={handleConnect}
-            disabled={status === "connecting"}
-            className="mono flex items-center gap-2"
-            style={{ background: "#EDE6D6", color: "#1C1A16", border: "none", padding: "12px 28px", borderRadius: 3, fontWeight: 700, cursor: "pointer", fontSize: 13 }}
-          >
-            {status === "connecting" ? <Loader2 size={14} className="animate-spin" /> : <WalletIcon size={14} />}
-            {status === "connecting" ? "CONNECTING..." : "CONNECT REAL WALLET"}
-          </button>
+          <div>
+            {isMobileDevice() && (
+              <div className="mono" style={{ fontSize: 11.5, opacity: 0.6, marginBottom: 12, lineHeight: 1.6 }}>
+                On mobile: this only works from inside the MetaMask app's own browser — having MetaMask
+                installed as a phone app isn't enough by itself. If "Connect" doesn't work below, use the
+                "open in MetaMask app" button that appears.
+              </div>
+            )}
+            <button
+              onClick={handleConnect}
+              disabled={status === "connecting"}
+              className="mono flex items-center gap-2"
+              style={{ background: "#EDE6D6", color: "#1C1A16", border: "none", padding: "12px 28px", borderRadius: 3, fontWeight: 700, cursor: "pointer", fontSize: 13 }}
+            >
+              {status === "connecting" ? <Loader2 size={14} className="animate-spin" /> : <WalletIcon size={14} />}
+              {status === "connecting" ? "CONNECTING..." : "CONNECT REAL WALLET"}
+            </button>
+          </div>
         ) : (
           <div>
             <div className="mono" style={{ fontSize: 12, opacity: 0.7, marginBottom: 20 }}>
@@ -130,8 +142,19 @@ export default function RealExchange({ onBack }) {
         )}
 
         {status === "error" && (
-          <div className="mono" style={{ marginTop: 16, fontSize: 12, color: "#C97D6F" }}>
-            {errorMsg}
+          <div style={{ marginTop: 16 }}>
+            <div className="mono" style={{ fontSize: 12, color: "#C97D6F", marginBottom: isMobileWalletError ? 12 : 0 }}>
+              {errorMsg}
+            </div>
+            {isMobileWalletError && (
+              <a
+                href={getMetaMaskDeepLink()}
+                className="mono flex items-center gap-2"
+                style={{ display: "inline-flex", background: "#EDE6D6", color: "#1C1A16", border: "none", padding: "10px 20px", borderRadius: 3, fontWeight: 700, cursor: "pointer", fontSize: 12.5, textDecoration: "none" }}
+              >
+                <WalletIcon size={13} /> OPEN THIS PAGE IN THE METAMASK APP
+              </a>
+            )}
           </div>
         )}
 
