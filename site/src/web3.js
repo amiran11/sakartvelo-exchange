@@ -7,9 +7,9 @@
 // Deployed addresses (Sepolia testnet, deployed and wired by hand
 // through Remix — see /contracts/README.md for the full deploy log):
 export const CONTRACT_ADDRESSES = {
-  InvestToken: "0x14637417015D872d7117CfcE2Cdd9A7D5cc52FD1",
-  ShareAuction: "0x8eD3E8790D27A1038371aB8AAeD468a9bd4f4C9A",
-  CompanyTreasury: "0xe90a1792625CF92D829C3D2Ae23972F79E2706b2",
+  InvestToken: "0xb5121076157730F5E553D5165bd57515506DeCA1",
+  ShareAuction: "0x2670068BD3A4D3902D329A2735D5A0ee6aFe3D04",
+  CompanyTreasury: "0xfe74f145e959c07D38064f08c83f523db2a43D40",
 };
 
 export const SEPOLIA_CHAIN_ID = "0xaa36a7"; // 11155111 in hex, what MetaMask expects
