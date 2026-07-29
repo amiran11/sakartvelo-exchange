@@ -1,0 +1,118 @@
+// src/web3.js
+//
+// The REAL blockchain layer, entirely separate from the simulated game
+// in App.jsx. This is Stage 1 of connecting the site to the actual
+// deployed Sepolia contracts: wallet connection + a real claim().
+//
+// Deployed addresses (Sepolia testnet, deployed and wired by hand
+// through Remix — see /contracts/README.md for the full deploy log):
+export const CONTRACT_ADDRESSES = {
+  InvestToken: "0x14637417015D872d7117CfcE2Cdd9A7D5cc52FD1",
+  ShareAuction: "0x8eD3E8790D27A1038371aB8AAeD468a9bd4f4C9A",
+  CompanyTreasury: "0xe90a1792625CF92D829C3D2Ae23972F79E2706b2",
+};
+
+export const SEPOLIA_CHAIN_ID = "0xaa36a7"; // 11155111 in hex, what MetaMask expects
+
+import InvestTokenABI from "./contracts/InvestToken.json";
+import ShareAuctionABI from "./contracts/ShareAuction.json";
+import CompanyTreasuryABI from "./contracts/CompanyTreasury.json";
+
+export const ABIS = {
+  InvestToken: InvestTokenABI,
+  ShareAuction: ShareAuctionABI,
+  CompanyTreasury: CompanyTreasuryABI,
+};
+
+// Lazily imports ethers only when actually needed — keeps it out of the
+// main bundle for visitors who never connect a real wallet at all.
+async function getEthers() {
+  return await import("ethers");
+}
+
+// Returns { provider, signer, address } or throws a clear error.
+// Requests MetaMask connection and switches/adds Sepolia if needed.
+export async function connectWallet() {
+  if (!window.ethereum) {
+    throw new Error(
+      "No wallet extension found. Install MetaMask (metamask.io) to connect a real wallet."
+    );
+  }
+
+  const { BrowserProvider } = await getEthers();
+
+  // Ask for account access
+  await window.ethereum.request({ method: "eth_requestAccounts" });
+
+  // Make sure we're on Sepolia — offer to switch, or add it if it's
+  // never been added to this wallet before.
+  const currentChainId = await window.ethereum.request({ method: "eth_chainId" });
+  if (currentChainId !== SEPOLIA_CHAIN_ID) {
+    try {
+      await window.ethereum.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: SEPOLIA_CHAIN_ID }],
+      });
+    } catch (switchError) {
+      // 4902 = chain not added to this wallet yet
+      if (switchError.code === 4902) {
+        await window.ethereum.request({
+          method: "wallet_addEthereumChain",
+          params: [
+            {
+              chainId: SEPOLIA_CHAIN_ID,
+              chainName: "Sepolia",
+              nativeCurrency: { name: "Sepolia ETH", symbol: "ETH", decimals: 18 },
+              rpcUrls: ["https://ethereum-sepolia-rpc.publicnode.com"],
+              blockExplorerUrls: ["https://sepolia.etherscan.io"],
+            },
+          ],
+        });
+      } else {
+        throw switchError;
+      }
+    }
+  }
+
+  const provider = new BrowserProvider(window.ethereum);
+  const signer = await provider.getSigner();
+  const address = await signer.getAddress();
+
+  return { provider, signer, address };
+}
+
+// Returns an ethers Contract instance connected to a signer (for writes)
+// or a provider (for reads only).
+export async function getContract(name, signerOrProvider) {
+  const { Contract } = await getEthers();
+  return new Contract(CONTRACT_ADDRESSES[name], ABIS[name], signerOrProvider);
+}
+
+// Real read-only checks against InvestToken — used to show accurate
+// state before someone attempts a real transaction, so the UI can
+// explain *why* claim() would fail instead of just letting it revert.
+export async function getClaimEligibility(address, provider) {
+  const investToken = await getContract("InvestToken", provider);
+  const [isVerified, alreadyClaimed, citizenCount, maxCitizens] = await Promise.all([
+    investToken.verifiedCitizen(address),
+    investToken.claimed(address),
+    investToken.citizenCount(),
+    investToken.maxCitizens(),
+  ]);
+  return {
+    isVerified,
+    alreadyClaimed,
+    citizenCount,
+    maxCitizens,
+    canClaim: isVerified && !alreadyClaimed && citizenCount < maxCitizens,
+  };
+}
+
+// The real claim — an actual transaction, not a simulated state update.
+// Returns the transaction receipt once mined.
+export async function claimReal(signer) {
+  const investToken = await getContract("InvestToken", signer);
+  const tx = await investToken.claim();
+  const receipt = await tx.wait();
+  return receipt;
+}
