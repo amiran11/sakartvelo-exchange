@@ -199,3 +199,98 @@ export async function finalizeAuctionReal(signer, companyId) {
   const tx = await shareAuction.finalize(companyId);
   return tx.wait();
 }
+
+// ---- Real governance (Stage 2, part 2) ----
+
+export async function getCompanyGovernance(companyId, provider) {
+  const shareAuction = await getContract("ShareAuction", provider);
+  const [round, voteEnd, governor, termEnd, operatingKey, termNum] = await Promise.all([
+    shareAuction.governanceRound(companyId),
+    shareAuction.governanceVoteEnd(companyId),
+    shareAuction.companyGovernor(companyId),
+    shareAuction.governorTermEnd(companyId),
+    shareAuction.governorOperatingKey(companyId),
+    shareAuction.termNumber(companyId),
+  ]);
+  return { round, voteEnd, governor, termEnd, operatingKey, termNum };
+}
+
+// Same event-log pattern as bids — candidateList is a public array with no
+// length getter, so the correct way to enumerate it is CandidateDeclared,
+// not probing indices. eliminated() and registered status are then read
+// fresh from the contract per-candidate, since elimination happens after
+// the declaration event and wouldn't show up in the log itself.
+export async function getCandidates(companyId, provider) {
+  const shareAuction = await getContract("ShareAuction", provider);
+  const filter = shareAuction.filters.CandidateDeclared(companyId);
+  const events = await shareAuction.queryFilter(filter, 0, "latest");
+  const round = await shareAuction.governanceRound(companyId);
+  const seen = new Set();
+  const candidates = [];
+  for (const e of events) {
+    const addr = e.args[1];
+    if (seen.has(addr)) continue;
+    seen.add(addr);
+    const [isEliminated, votes] = await Promise.all([
+      shareAuction.eliminated(companyId, addr),
+      round > 0n ? shareAuction.roundVotes(companyId, round, addr) : Promise.resolve(0n),
+    ]);
+    candidates.push({ address: addr, program: e.args[2], eliminated: isEliminated, votes });
+  }
+  return candidates;
+}
+
+export async function getMyShareCount(companyId, address, provider) {
+  const shareAuction = await getContract("ShareAuction", provider);
+  return shareAuction.companyShareCount(companyId, address);
+}
+
+export async function hasVotedThisRound(companyId, round, address, provider) {
+  const shareAuction = await getContract("ShareAuction", provider);
+  return shareAuction.roundHasVoted(companyId, round, address);
+}
+
+export async function declareCandidacyReal(signer, companyId, program) {
+  const shareAuction = await getContract("ShareAuction", signer);
+  const tx = await shareAuction.declareCandidacy(companyId, program);
+  return tx.wait();
+}
+
+export async function openGovernanceVoteReal(signer, companyId) {
+  const shareAuction = await getContract("ShareAuction", signer);
+  const tx = await shareAuction.openGovernanceVote(companyId);
+  return tx.wait();
+}
+
+export async function voteReal(signer, companyId, candidateAddress) {
+  const shareAuction = await getContract("ShareAuction", signer);
+  const tx = await shareAuction.vote(companyId, candidateAddress);
+  return tx.wait();
+}
+
+export async function tallyRoundReal(signer, companyId) {
+  const shareAuction = await getContract("ShareAuction", signer);
+  const tx = await shareAuction.tallyRound(companyId);
+  return tx.wait();
+}
+
+export async function setOperatingKeyReal(signer, companyId, operatingKeyAddress) {
+  const shareAuction = await getContract("ShareAuction", signer);
+  const tx = await shareAuction.setOperatingKey(companyId, operatingKeyAddress);
+  return tx.wait();
+}
+
+export async function startNewTermReal(signer, companyId) {
+  const shareAuction = await getContract("ShareAuction", signer);
+  const tx = await shareAuction.startNewTerm(companyId);
+  return tx.wait();
+}
+
+// Generates a fresh keypair client-side for a newly-elected governor to
+// register as their term's operating key — same pattern as the citizen
+// browser wallet, just not persisted to localStorage, since whoever calls
+// this needs to see and save the private key themselves, once, right now.
+export async function generateOperatingKeypair() {
+  const { Wallet } = await getEthers();
+  return Wallet.createRandom(); // has .address and .privateKey
+}

@@ -8,6 +8,7 @@ import {
   placeBidReal,
   finalizeAuctionReal,
 } from "../web3.js";
+import CompanyGovernance from "./CompanyGovernance.jsx";
 
 function fmtInvest(raw) {
   // INVEST uses 18 decimals, same as ETH — raw is a BigInt from the contract.
@@ -156,6 +157,8 @@ function CompanyAuctionCard({ company, wallet, onChanged }) {
       )}
 
       {error && <div className="mono" style={{ fontSize: 11, color: "#C97D6F", marginTop: 8 }}>{error}</div>}
+
+      <CompanyGovernance company={company} wallet={wallet} />
     </div>
   );
 }
