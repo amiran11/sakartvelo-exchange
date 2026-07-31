@@ -143,3 +143,59 @@ export async function claimReal(signer) {
   const receipt = await tx.wait();
   return receipt;
 }
+
+// ---- Real auctions (Stage 2) ----
+
+// Companies don't have a registry array on-chain — listCompany() is called
+// per-id by the owner, whenever. We just probe a reasonable range of ids
+// and keep whichever ones actually have totalShares > 0 (i.e. are real).
+// 0-19 comfortably covers the 11-company roster with room to grow.
+const COMPANY_ID_PROBE_RANGE = 20;
+
+export async function getListedCompanies(provider) {
+  const shareAuction = await getContract("ShareAuction", provider);
+  const ids = Array.from({ length: COMPANY_ID_PROBE_RANGE }, (_, i) => i);
+  const results = await Promise.all(
+    ids.map(async (id) => {
+      const c = await shareAuction.companies(id);
+      return { id, ...c };
+    })
+  );
+  return results.filter((c) => c.totalShares > 0n);
+}
+
+// Bids aren't stored with a public "how many are there" getter — the
+// correct way to read an unbounded on-chain array like this is the event
+// log, not guessing/probing indices until a call reverts.
+export async function getCompanyBids(companyId, provider) {
+  const shareAuction = await getContract("ShareAuction", provider);
+  const filter = shareAuction.filters.BidPlaced(companyId);
+  const events = await shareAuction.queryFilter(filter, 0, "latest");
+  return events
+    .map((e) => ({ bidder: e.args[1], amount: e.args[2] }))
+    .sort((a, b) => (b.amount > a.amount ? 1 : -1));
+}
+
+export async function getInvestAllowance(ownerAddress, provider) {
+  const investToken = await getContract("InvestToken", provider);
+  return investToken.allowance(ownerAddress, CONTRACT_ADDRESSES.ShareAuction);
+}
+
+export async function approveInvest(signer, amount) {
+  const investToken = await getContract("InvestToken", signer);
+  const tx = await investToken.approve(CONTRACT_ADDRESSES.ShareAuction, amount);
+  return tx.wait();
+}
+
+export async function placeBidReal(signer, companyId, amount) {
+  const shareAuction = await getContract("ShareAuction", signer);
+  const tx = await shareAuction.placeBid(companyId, amount);
+  return tx.wait();
+}
+
+// Anyone can call this once the auction window closes — not owner-gated.
+export async function finalizeAuctionReal(signer, companyId) {
+  const shareAuction = await getContract("ShareAuction", signer);
+  const tx = await shareAuction.finalize(companyId);
+  return tx.wait();
+}
