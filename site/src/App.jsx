@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback, createContext, useContext } f
 import RealExchange from "./components/RealExchange.jsx";
 import {
   Landmark, Pickaxe, Flame, Layers, TreePine, Gavel, Train, Factory, Zap, Anchor, Mountain, Ship,
-  TrendingUp, TrendingDown, Trophy, Wallet as WalletIcon, Clock, Hash, RotateCcw, Languages
+  TrendingUp, TrendingDown, Trophy, Wallet as WalletIcon, Clock, Hash, RotateCcw, Languages,
+  Download, Eye, EyeOff, X, ShieldAlert
 } from "lucide-react";
 
 // "owned" = the state directly holds and operates the asset today.
@@ -96,6 +97,20 @@ const STRINGS = {
     wpTitle: "Sakartvelo Exchange",
     wpSubtitle: "A closed-loop allocation, a competitive market, and elected, term-limited governance — simulating how a state's holdings could pass into citizen ownership without a \"sell it for cash\" method that structurally favors whoever already has capital.",
     wpFooter: "Implemented across three contracts — InvestToken, ShareAuction, and CompanyTreasury — split apart because the full mechanism exceeded Ethereum's single-contract size limit once built out in full. Source and full technical documentation ship alongside this site.",
+    walletExportButtonTitle: "Export this wallet's address and private key",
+    walletExportTitle: "Export Wallet",
+    walletWarningTitle: "KEEP THIS SAFE",
+    walletWarnPre: "This private key is the only way into this wallet and everything tied to it — your INVEST balance and any shares you've won. It currently lives only in this browser's storage. If you clear site data, switch browsers, or move to a new device without saving this, ",
+    walletWarnBold: "you lose access permanently — there is no recovery.",
+    walletWarnPost: " Store the downloaded file somewhere private and never share it with anyone.",
+    walletPublicAddress: "PUBLIC ADDRESS",
+    walletPrivateKey: "PRIVATE KEY",
+    walletReveal: "reveal",
+    walletHide: "hide",
+    walletCopied: "Copied",
+    walletDownloadBtn: "DOWNLOAD WALLET BACKUP",
+    walletBackupWarningFile: "KEEP THIS FILE PRIVATE. Anyone who has this private key fully controls this wallet and everything it owns. Sakartvelo Exchange has no server and no account recovery — if you lose both this file and your browser's local storage, access is gone permanently.",
+    walletBackupApp: "Sakartvelo Exchange (fictional simulation)",
   },
   ka: {
     subtitle: "სახელმწიფო აქტივების აუქციონის სიმულაცია",
@@ -152,6 +167,20 @@ const STRINGS = {
     wpTitle: "Sakartvelo Exchange",
     wpSubtitle: "დახურული წრის განაწილება, კონკურენტული ბაზარი და არჩეული, ვადიანი მმართველობა — სიმულაცია იმისა, თუ როგორ შეიძლება სახელმწიფო აქტივები მოქალაქეთა საკუთრებაში გადავიდეს „ფულში გაყიდვის\u201c მეთოდის გარეშე, რომელიც სტრუქტურულად უპირატესობას ანიჭებს მას, ვისაც უკვე აქვს კაპიტალი.",
     wpFooter: "დანერგილია სამ კონტრაქტში — InvestToken, ShareAuction და CompanyTreasury — გაყოფილი, რადგან სრული მექანიზმი გადააჭარბა Ethereum-ის ერთი კონტრაქტის ზომის ლიმიტს სრულად აგებულ მდგომარეობაში. კოდი და სრული ტექნიკური დოკუმენტაცია გვერდით ერთვის ამ საიტს.",
+    walletExportButtonTitle: "საფულის მისამართისა და პირადი გასაღების ექსპორტი",
+    walletExportTitle: "საფულის ექსპორტი",
+    walletWarningTitle: "შეინახეთ უსაფრთხოდ",
+    walletWarnPre: "ეს პირადი გასაღები არის ერთადერთი გზა ამ საფულეში და მასთან დაკავშირებულ ყველაფერში შესასვლელად — თქვენი INVEST ბალანსი და მოგებული აქციები. ამჟამად ის ინახება მხოლოდ ამ ბრაუზერის მეხსიერებაში. თუ გაასუფთავებთ საიტის მონაცემებს, გადახვალთ სხვა ბრაუზერზე ან მოწყობილობაზე ამის შენახვის გარეშე, ",
+    walletWarnBold: "სამუდამოდ დაკარგავთ წვდომას — აღდგენა შეუძლებელია.",
+    walletWarnPost: " ჩამოტვირთული ფაილი შეინახეთ პირად, უსაფრთხო ადგილას და არავის გაუზიაროთ.",
+    walletPublicAddress: "საჯარო მისამართი",
+    walletPrivateKey: "პირადი გასაღები",
+    walletReveal: "ჩვენება",
+    walletHide: "დამალვა",
+    walletCopied: "დაკოპირდა",
+    walletDownloadBtn: "საფულის სარეზერვო ასლის ჩამოტვირთვა",
+    walletBackupWarningFile: "შეინახეთ ეს ფაილი პირადად. ვისაც ეს პირადი გასაღები აქვს, სრულად აკონტროლებს ამ საფულეს და მასში არსებულ ყველაფერს. Sakartvelo Exchange-ს არ აქვს სერვერი და ანგარიშის აღდგენის შესაძლებლობა — თუ დაკარგავთ როგორც ამ ფაილს, ისე ბრაუზერის ლოკალურ მეხსიერებას, წვდომა სამუდამოდ დაიკარგება.",
+    walletBackupApp: "Sakartvelo Exchange (გამოგონილი სიმულაცია)",
   },
 };
 
@@ -234,6 +263,29 @@ async function getOrCreateWallet() {
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 function fmt(n) { return Math.round(n).toLocaleString(); }
 
+// Saves address + private key to a JSON file the visitor keeps themselves —
+// this app has no server, so this download IS the only backup that will
+// ever exist. Lose it and clear localStorage, and the wallet (and anything
+// tied to it) is gone for good.
+function downloadWalletBackup(wallet, t) {
+  const payload = {
+    warning: t("walletBackupWarningFile"),
+    app: t("walletBackupApp"),
+    address: wallet.address,
+    privateKey: wallet.privateKey,
+    exportedAt: new Date().toISOString(),
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `sakartvelo-wallet-${wallet.address.slice(2, 8)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 function applyGovernancePolicy(assetId, policy, assets, holdings, cash) {
   const a = assets[assetId];
   if (a.governanceResolved) return;
@@ -303,6 +355,7 @@ export default function App() {
   const [governanceEndsAt, setGovernanceEndsAt] = useState(null);
   const [tradingEndsAt, setTradingEndsAt] = useState(null);
   const [mintPopup, setMintPopup] = useState(null);
+  const [showExport, setShowExport] = useState(false);
   const [wallet, setWallet] = useState(null);
   const tickRef = useRef(null);
 
@@ -549,9 +602,16 @@ export default function App() {
           >
             LIVE ON SEPOLIA
           </button>
-          <div className="mono" style={{ fontSize: 11, opacity: 0.6 }} title={wallet?.address || ""}>
+          <button
+            onClick={() => wallet && setShowExport(true)}
+            disabled={!wallet}
+            className="mono flex items-center gap-1.5"
+            title={t("walletExportButtonTitle")}
+            style={{ fontSize: 11, opacity: 0.6, background: "none", border: "none", cursor: wallet ? "pointer" : "default", color: "inherit", padding: 0 }}
+          >
+            <Download size={11} />
             {wallet ? `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}` : "···"}
-          </div>
+          </button>
           {(phase === "auction" || phase === "governance" || phase === "trading" || phase === "end") && (
             <div className="mono flex items-center gap-1.5" style={{ fontSize: 11, opacity: 0.55 }} title={t("hostTakeTitle")}>
               <Hash size={11} /> {t("hostTakeLabel")} {fmt(game.hostTake)}
@@ -600,6 +660,8 @@ export default function App() {
       )}
 
       {mintPopup && <MintPopup data={mintPopup} />}
+
+      {showExport && <WalletExportModal wallet={wallet} onClose={() => setShowExport(false)} />}
 
       <div className="px-6 py-4 mono" style={{ fontSize: 11, opacity: 0.45, borderTop: "1px solid rgba(237,230,214,0.1)" }}>
         {t("footer")}
@@ -950,6 +1012,97 @@ function MintPopup({ data }) {
           {fmt(data.capitalCut)} {t("mintCapital")}<br />
           {fmt(data.hostCut)} {t("mintHost")}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function WalletExportModal({ wallet, onClose }) {
+  const { t } = useLang();
+  const [revealed, setRevealed] = useState(false);
+  const [copied, setCopied] = useState(null);
+
+  const copy = async (label, text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(label);
+      setTimeout(() => setCopied(null), 1500);
+    } catch {
+      // clipboard API unavailable — the field's still selectable by hand
+    }
+  };
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+      onClick={onClose}
+    >
+      <div
+        className="perforated"
+        style={{ background: "#EDE6D6", color: "#1C1A16", borderRadius: 4, padding: "28px 30px", maxWidth: 460, width: "100%", boxShadow: "0 12px 30px rgba(0,0,0,0.45)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between" style={{ marginBottom: 14 }}>
+          <div className="flex items-center gap-2">
+            <WalletIcon size={18} />
+            <div className="zilla" style={{ fontSize: 18, fontWeight: 700 }}>{t("walletExportTitle")}</div>
+          </div>
+          <button onClick={onClose} className="mono" style={{ background: "none", border: "none", cursor: "pointer", opacity: 0.6 }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <div style={{ background: "rgba(201,138,62,0.15)", border: "1px solid #C98A3E", borderRadius: 4, padding: "12px 14px", marginBottom: 18 }}>
+          <div className="mono flex items-center gap-1.5" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: "#9A5B1E", marginBottom: 4 }}>
+            <ShieldAlert size={13} /> {t("walletWarningTitle")}
+          </div>
+          <div style={{ fontSize: 12.5, lineHeight: 1.55, opacity: 0.85 }}>
+            {t("walletWarnPre")}<strong>{t("walletWarnBold")}</strong>{t("walletWarnPost")}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <div className="mono" style={{ fontSize: 10, opacity: 0.55, letterSpacing: 0.5, marginBottom: 4 }}>{t("walletPublicAddress")}</div>
+          <div
+            className="mono"
+            onClick={() => copy("address", wallet.address)}
+            title="Click to copy"
+            style={{ fontSize: 12, wordBreak: "break-all", background: "rgba(28,26,22,0.06)", borderRadius: 3, padding: "8px 10px", cursor: "pointer" }}
+          >
+            {wallet.address}
+          </div>
+          {copied === "address" && <div className="mono" style={{ fontSize: 10, opacity: 0.6, marginTop: 3 }}>{t("walletCopied")}</div>}
+        </div>
+
+        <div style={{ marginBottom: 20 }}>
+          <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+            <div className="mono" style={{ fontSize: 10, opacity: 0.55, letterSpacing: 0.5 }}>{t("walletPrivateKey")}</div>
+            <button
+              onClick={() => setRevealed(r => !r)}
+              className="mono flex items-center gap-1"
+              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, opacity: 0.6 }}
+            >
+              {revealed ? <EyeOff size={12} /> : <Eye size={12} />} {revealed ? t("walletHide") : t("walletReveal")}
+            </button>
+          </div>
+          <div
+            className="mono"
+            onClick={() => revealed && copy("key", wallet.privateKey)}
+            title={revealed ? "Click to copy" : "Click reveal first"}
+            style={{ fontSize: 12, wordBreak: "break-all", background: "rgba(28,26,22,0.06)", borderRadius: 3, padding: "8px 10px", cursor: revealed ? "pointer" : "default" }}
+          >
+            {revealed ? wallet.privateKey : "•".repeat(64)}
+          </div>
+          {copied === "key" && <div className="mono" style={{ fontSize: 10, opacity: 0.6, marginTop: 3 }}>{t("walletCopied")}</div>}
+        </div>
+
+        <button
+          onClick={() => downloadWalletBackup(wallet, t)}
+          className="mono flex items-center justify-center gap-2"
+          style={{ width: "100%", background: "#1C1A16", color: "#EDE6D6", border: "none", padding: "11px 0", borderRadius: 3, fontWeight: 700, cursor: "pointer", fontSize: 13, letterSpacing: 0.5 }}
+        >
+          <Download size={14} /> {t("walletDownloadBtn")}
+        </button>
       </div>
     </div>
   );
