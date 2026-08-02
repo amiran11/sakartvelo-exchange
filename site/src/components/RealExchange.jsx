@@ -51,7 +51,10 @@ export default function RealExchange({ onBack }) {
   return (
     <div style={{ fontFamily: "Inter, sans-serif", background: "linear-gradient(180deg,#141B18,#1B2622)", minHeight: "100vh", color: "#EDE6D6" }}>
       <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: "1px solid rgba(237,230,214,0.15)" }}>
-        <div className="zilla" style={{ fontSize: 20, fontWeight: 700 }}>SAKARTVELO EXCHANGE — LIVE (Sepolia)</div>
+        <div className="flex items-center gap-2">
+          <img src="/favicon.svg" alt="" width="26" height="26" style={{ borderRadius: 6 }} />
+          <div className="zilla" style={{ fontSize: 20, fontWeight: 700 }}>SAKARTVELO EXCHANGE — LIVE (Sepolia)</div>
+        </div>
         <button onClick={onBack} className="mono" style={{ fontSize: 11, background: "rgba(237,230,214,0.08)", border: "none", color: "#EDE6D6", cursor: "pointer", padding: "8px 14px", borderRadius: 3 }}>
           ← BACK TO DEMO
         </button>
