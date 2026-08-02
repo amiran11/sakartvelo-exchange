@@ -675,7 +675,7 @@ function LandingScreen({ onEnter }) {
   const { lang, t } = useLang();
   const Section = ({ title, children }) => (
     <div style={{ marginBottom: 22 }}>
-      <div className="zilla" style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: "#EDE6D6" }}>{title}</div>
+      <h2 className="zilla" style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: "#EDE6D6" }}>{title}</h2>
       <div style={{ fontSize: 13, lineHeight: 1.6, opacity: 0.78 }}>{children}</div>
     </div>
   );
@@ -690,7 +690,7 @@ function LandingScreen({ onEnter }) {
         </div>
       </div>
 
-      <div className="zilla" style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>{t("landingTitle")}</div>
+      <h1 className="zilla" style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>{t("landingTitle")}</h1>
       <div className="mono" style={{ fontSize: 11, opacity: 0.5, marginBottom: 28, letterSpacing: 0.5 }}>
         {t("landingSubtitle")}
       </div>
@@ -714,9 +714,9 @@ function WhitePaper({ onBack, lang, setLang }) {
   const { t } = useLang();
   const Section = ({ n, title, children }) => (
     <div style={{ marginBottom: 30 }}>
-      <div className="zilla" style={{ fontSize: 17, fontWeight: 700, marginBottom: 8, color: "#EDE6D6" }}>
+      <h2 className="zilla" style={{ fontSize: 17, fontWeight: 700, marginBottom: 8, color: "#EDE6D6" }}>
         <span className="mono" style={{ opacity: 0.45, marginRight: 8, fontSize: 14 }}>{n}</span>{title}
-      </div>
+      </h2>
       <div style={{ fontSize: 13.5, lineHeight: 1.7, opacity: 0.82 }}>{children}</div>
     </div>
   );
@@ -760,9 +760,9 @@ function WhitePaper({ onBack, lang, setLang }) {
         </div>
 
         <div className="mono" style={{ fontSize: 11, opacity: 0.5, letterSpacing: 1, marginBottom: 6 }}>{t("wpProtocol")}</div>
-        <div className="zilla" style={{ fontSize: 32, fontWeight: 700, marginBottom: 8, lineHeight: 1.15 }}>
+        <h1 className="zilla" style={{ fontSize: 32, fontWeight: 700, marginBottom: 8, lineHeight: 1.15 }}>
           {t("wpTitle")}
-        </div>
+        </h1>
         <div style={{ fontSize: 14.5, opacity: 0.7, marginBottom: 44, lineHeight: 1.6 }}>
           {t("wpSubtitle")}
         </div>

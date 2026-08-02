@@ -21,6 +21,29 @@
     <meta name="twitter:title" content="Sakartvelo Exchange" />
     <meta name="twitter:description" content="A fictional privatization auction simulation — equal citizen allocations, competitive bidding, runoff-elected governors, and real Solidity contracts." />
     <meta name="twitter:image" content="/og-image.png" />
+
+    <!-- Structured data. Deliberately NOT typed as a FinancialProduct or
+         InvestmentOrDeposit schema — that would contradict the site's own
+         honest disclaimer that this is a fictional simulation, not a real
+         financial product. WebApplication + a Game category is the
+         accurate description of what this actually is. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "Sakartvelo Exchange",
+        "description": "A fictional privatization auction simulation — equal citizen allocations, competitive bidding, runoff-elected governors, and real Solidity contracts. Not a real financial product.",
+        "url": "https://www.sakartvelo-exchange.com/",
+        "applicationCategory": "Game",
+        "operatingSystem": "Any (web browser)",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "inLanguage": ["en", "ka"]
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
