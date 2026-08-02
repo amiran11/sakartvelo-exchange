@@ -574,12 +574,12 @@ export default function App() {
         .perforated { background-image: repeating-linear-gradient(90deg, transparent, transparent 6px, rgba(0,0,0,0.12) 6px, rgba(0,0,0,0.12) 7px); background-position: top; background-size: 100% 2px; background-repeat: no-repeat; }
       `}</style>
 
-      <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: "1px solid rgba(237,230,214,0.15)" }}>
+      <div className="flex flex-wrap items-center justify-between gap-y-2 px-4 sm:px-6 py-4" style={{ borderBottom: "1px solid rgba(237,230,214,0.15)" }}>
         <div>
           <div className="zilla" style={{ fontSize: 26, fontWeight: 700, letterSpacing: 0.5 }}>SAKARTVELO EXCHANGE</div>
           <div className="mono" style={{ fontSize: 11, opacity: 0.55, letterSpacing: 1 }}>{t("subtitle")}</div>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-4">
           <button
             onClick={() => setLang(l => (l === "en" ? "ka" : "en"))}
             className="mono flex items-center gap-1"
@@ -729,7 +729,7 @@ function WhitePaper({ onBack, lang, setLang }) {
         body, div, p, span, button { font-family: 'Inter', 'Noto Sans Georgian', sans-serif; }
       `}</style>
 
-      <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: "1px solid rgba(237,230,214,0.15)" }}>
+      <div className="flex flex-wrap items-center justify-between gap-y-2 px-4 sm:px-6 py-4" style={{ borderBottom: "1px solid rgba(237,230,214,0.15)" }}>
         <div className="zilla" style={{ fontSize: 20, fontWeight: 700 }}>SAKARTVELO EXCHANGE</div>
         <div className="flex items-center gap-3">
           <button
