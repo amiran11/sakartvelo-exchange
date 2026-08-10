@@ -158,7 +158,22 @@ export async function getListedCompanies(provider) {
   const results = await Promise.all(
     ids.map(async (id) => {
       const c = await shareAuction.companies(id);
-      return { id, ...c };
+      // Explicit field access, NOT { ...c } — spreading an ethers v6
+      // struct Result silently drops every named property (confirmed by
+      // direct reproduction), leaving totalShares etc. as undefined and
+      // making the filter below always exclude every company, always,
+      // regardless of real on-chain state. This is the actual fix for
+      // "correctly listed on-chain, permanently invisible on the site."
+      return {
+        id,
+        name: c.name,
+        totalShares: c.totalShares,
+        sharesIssued: c.sharesIssued,
+        auctionEnd: c.auctionEnd,
+        mintedAt: c.mintedAt,
+        finalized: c.finalized,
+        capital: c.capital,
+      };
     })
   );
   return results.filter((c) => c.totalShares > 0n);
