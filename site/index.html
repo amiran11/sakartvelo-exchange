@@ -44,15 +44,9 @@
         "inLanguage": ["en", "ka"]
       }
     </script>
-    <!-- Google Analytics (gtag.js). Split into two script tags on purpose:
-         the library loads from googletagmanager.com (allowlisted in
-         vercel.json's CSP), and the actual init/config call lives in a
-         same-origin file (gtag-init.js) instead of inline here — CSP
-         blocks inline scripts by default, and adding 'unsafe-inline' back
-         to script-src would undo real hardening done earlier. This gets
-         the same tracking without that tradeoff. -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-2CHEJDL9S9"></script>
-    <script src="/gtag-init.js"></script>
+    <!-- Google Analytics is loaded dynamically, only after consent, via
+         the ConsentBanner component — not unconditionally here. See
+         src/components/ConsentBanner.jsx. -->
   </head>
   <body>
     <div id="root"></div>

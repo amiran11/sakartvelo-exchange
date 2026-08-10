@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, createContext, useContext } from "react";
 import RealExchange from "./components/RealExchange.jsx";
+import ConsentBanner from "./components/ConsentBanner.jsx";
 import {
   Landmark, Pickaxe, Flame, Layers, TreePine, Gavel, Train, Factory, Zap, Anchor, Mountain, Ship,
   TrendingUp, TrendingDown, Trophy, Wallet as WalletIcon, Clock, Hash, RotateCcw, Languages,
@@ -552,12 +553,18 @@ export default function App() {
     return (
       <LangContext.Provider value={langCtx}>
         <WhitePaper onBack={() => setView("game")} lang={lang} setLang={setLang} />
+        <ConsentBanner />
       </LangContext.Provider>
     );
   }
 
   if (view === "real") {
-    return <RealExchange onBack={() => setView("game")} />;
+    return (
+      <>
+        <RealExchange onBack={() => setView("game")} />
+        <ConsentBanner />
+      </>
+    );
   }
 
   return (
@@ -670,6 +677,7 @@ export default function App() {
         {t("footer")}
       </div>
     </div>
+    <ConsentBanner />
     </LangContext.Provider>
   );
 }
