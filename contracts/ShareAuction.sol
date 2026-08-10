@@ -239,6 +239,37 @@ contract ShareAuction is ERC721, Ownable {
         emit CompanyListed(companyId, name, totalShares, end);
     }
 
+    event CompanyRelisted(uint256 indexed companyId, uint256 auctionEnd);
+
+    /// @notice If a listed company's auction closed with ZERO winning bids
+    /// (sharesIssued == 0 after finalize()), the owner can reopen the same
+    /// companyId for a fresh round instead of it being permanently stuck —
+    /// confirmed live, twice in one testing session, that finalize()'s
+    /// unconditional one-shot settlement had no retry path at all, which
+    /// doesn't match how a real privatization process should behave when
+    /// an asset draws no bids.
+    ///
+    /// Deliberately narrow: only callable when sharesIssued == 0. A
+    /// company with ANY real winners can never be relisted this way —
+    /// reopening bidding on something citizens already hold shares in
+    /// would dilute real ownership, a completely different and much worse
+    /// problem than the one this fixes. Safe to skip clearing bids[]:
+    /// sharesIssued == 0 can only happen if the bids array was genuinely
+    /// empty at finalization (winners = min(totalShares, bids.length),
+    /// and totalShares is always > 0 by listCompany's own require) — so
+    /// there is nothing left over to refund or clean up.
+    function relistIfUnfilled(uint256 companyId, uint256 durationSeconds) external onlyOwner {
+        Company storage c = companies[companyId];
+        require(c.totalShares > 0, "ShareAuction: unknown company");
+        require(c.finalized, "ShareAuction: not finalized yet");
+        require(c.sharesIssued == 0, "ShareAuction: has real winners, cannot relist");
+        c.finalized = false;
+        c.auctionEnd = block.timestamp + durationSeconds;
+        c.mintedAt = 0;
+        companiesFinalized--;
+        emit CompanyRelisted(companyId, c.auctionEnd);
+    }
+
     /// @notice Locks `amount` INVEST into this contract as a bid. A bidder
     /// may call this multiple times to raise their own standing bid.
     function placeBid(uint256 companyId, uint256 amount) external {
