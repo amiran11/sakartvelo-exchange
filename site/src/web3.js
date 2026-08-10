@@ -152,6 +152,28 @@ export async function claimReal(signer) {
 // 0-19 comfortably covers the 11-company roster with room to grow.
 const COMPANY_ID_PROBE_RANGE = 20;
 
+// The redeployed contracts went live within roughly the last 85,000
+// blocks — using this as fromBlock instead of 0 avoids exceeding the
+// ~10,000-block range cap many RPC providers enforce on eth_getLogs.
+// Confirmed live: querying from genesis threw "range 11461200 exceeds
+// limit of 10000" on every single event-log read tonight, for every
+// company — silently breaking "Loading bid history..." forever, and
+// making a genuinely successful bid look like a failure in the UI,
+// since the post-bid refresh call was throwing right after.
+const DEPLOYMENT_BLOCK = 11377900;
+
+async function queryFilterChunked(contract, filter, fromBlock = DEPLOYMENT_BLOCK) {
+  const latest = await contract.runner.provider.getBlockNumber();
+  const CHUNK = 9000; // safely under the common 10,000-block RPC cap
+  let events = [];
+  for (let start = fromBlock; start <= latest; start += CHUNK) {
+    const end = Math.min(start + CHUNK - 1, latest);
+    const chunk = await contract.queryFilter(filter, start, end);
+    events = events.concat(chunk);
+  }
+  return events;
+}
+
 export async function getListedCompanies(provider) {
   const shareAuction = await getContract("ShareAuction", provider);
   const ids = Array.from({ length: COMPANY_ID_PROBE_RANGE }, (_, i) => i);
@@ -185,7 +207,7 @@ export async function getListedCompanies(provider) {
 export async function getCompanyBids(companyId, provider) {
   const shareAuction = await getContract("ShareAuction", provider);
   const filter = shareAuction.filters.BidPlaced(companyId);
-  const events = await shareAuction.queryFilter(filter, 0, "latest");
+  const events = await queryFilterChunked(shareAuction, filter);
   return events
     .map((e) => ({ bidder: e.args[1], amount: e.args[2] }))
     .sort((a, b) => (b.amount > a.amount ? 1 : -1));
@@ -238,7 +260,7 @@ export async function getCompanyGovernance(companyId, provider) {
 export async function getCandidates(companyId, provider) {
   const shareAuction = await getContract("ShareAuction", provider);
   const filter = shareAuction.filters.CandidateDeclared(companyId);
-  const events = await shareAuction.queryFilter(filter, 0, "latest");
+  const events = await queryFilterChunked(shareAuction, filter);
   const round = await shareAuction.governanceRound(companyId);
   const seen = new Set();
   const candidates = [];
