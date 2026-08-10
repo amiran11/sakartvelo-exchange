@@ -5,6 +5,8 @@ import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/Base64.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
 import "./InvestToken.sol";
 
 /// @title ShareAuction
@@ -57,6 +59,7 @@ contract ShareAuction is ERC721, Ownable {
     mapping(uint256 => Company) public companies;
     mapping(uint256 => Bid[]) public bids;
     mapping(uint256 => uint256) public shareCompany; // tokenId => companyId
+    mapping(uint256 => uint256) public shareOrdinal; // tokenId => which share # of its company (1-indexed)
     mapping(uint256 => mapping(address => uint256)) public companyShareCount; // companyId => holder => shares held
 
     /// @notice How many companies have been listed vs. finalized, so
@@ -313,6 +316,7 @@ contract ShareAuction is ERC721, Ownable {
                 _safeMint(b[i].bidder, tokenId);
                 shareCompany[tokenId] = companyId;
                 c.sharesIssued++;
+                shareOrdinal[tokenId] = c.sharesIssued; // 1-indexed: "share N of totalShares"
                 companyShareCount[companyId][b[i].bidder]++;
 
                 uint256 fee = (b[i].amount * HOST_FEE_BPS) / 10_000;
@@ -609,5 +613,38 @@ contract ShareAuction is ERC721, Ownable {
     /// company's governance too, just like a real parent/subsidiary stake.
     function corporateHolder(uint256 companyId) public pure returns (address) {
         return address(uint160(uint256(keccak256(abi.encodePacked("SOVEREIGN_LOTS_CORP", companyId)))));
+    }
+
+    /// @notice Fully on-chain metadata and artwork — no external server, no
+    /// off-chain image host that could go dark and leave a real, owned
+    /// asset showing a blank square forever. Company name, which share
+    /// number this is, and how many exist in total are all pulled live
+    /// from this contract's own storage, base64-encoded straight into the
+    /// token's data URI, the same way the wallet-export flow's "no server,
+    /// no account recovery" philosophy already runs through the rest of
+    /// this project.
+    function tokenURI(uint256 tokenId) public view override returns (string memory) {
+        require(_ownerOf(tokenId) != address(0), "ShareAuction: nonexistent token");
+        uint256 companyId = shareCompany[tokenId];
+        Company storage c = companies[companyId];
+        uint256 ord = shareOrdinal[tokenId];
+
+        string memory svg = string(abi.encodePacked(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400">',
+            '<rect width="400" height="400" fill="#141B18"/>',
+            '<circle cx="200" cy="180" r="130" fill="none" stroke="#C98A3E" stroke-width="8"/>',
+            '<text x="200" y="140" font-family="serif" font-weight="bold" font-size="22" fill="#EDE6D6" text-anchor="middle">', c.name, '</text>',
+            '<text x="200" y="190" font-family="monospace" font-size="18" fill="#C98A3E" text-anchor="middle">SHARE ', Strings.toString(ord), ' OF ', Strings.toString(c.totalShares), '</text>',
+            '<text x="200" y="360" font-family="monospace" font-size="10" fill="#EDE6D6" opacity="0.5" text-anchor="middle">FICTIONAL SIMULATION - NOT A REAL FINANCIAL PRODUCT</text>',
+            '</svg>'
+        ));
+
+        string memory json = string(abi.encodePacked(
+            '{"name":"', c.name, ' - Share ', Strings.toString(ord), '/', Strings.toString(c.totalShares), '",',
+            '"description":"Sovereign Share NFT from a fictional privatization simulation. Not a real financial product, security, or claim on any real-world asset.",',
+            '"image":"data:image/svg+xml;base64,', Base64.encode(bytes(svg)), '"}'
+        ));
+
+        return string(abi.encodePacked('data:application/json;base64,', Base64.encode(bytes(json))));
     }
 }
