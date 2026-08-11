@@ -273,13 +273,24 @@ contract ShareAuction is ERC721, Ownable {
         emit CompanyRelisted(companyId, c.auctionEnd);
     }
 
+    /// @notice The only floor placeBid() used to enforce was "> 0" —
+    /// meaning a bid could be a single wei-unit, 0.000000000000000001
+    /// INVEST. That gap is real, not academic: since bid COUNT (not bid
+    /// VALUE) is what drives finalize()'s O(n^2) sorting cost, someone
+    /// could split a modest budget into an enormous number of near-zero
+    /// bids and push a company's gas cost past the block limit, making it
+    /// permanently unfinalizable — with a full 1000-INVEST citizen
+    /// allocation, that was never actually blocked by "everyone only gets
+    /// 1000 INVEST" the way it might have seemed to.
+    uint256 public constant MIN_BID = 1 * 10 ** 18; // 1 whole INVEST
+
     /// @notice Locks `amount` INVEST into this contract as a bid. A bidder
     /// may call this multiple times to raise their own standing bid.
     function placeBid(uint256 companyId, uint256 amount) external {
         Company storage c = companies[companyId];
         require(c.totalShares > 0, "ShareAuction: unknown company");
         require(block.timestamp < c.auctionEnd, "ShareAuction: auction closed");
-        require(amount > 0, "ShareAuction: bid must be > 0");
+        require(amount >= MIN_BID, "ShareAuction: bid below minimum (1 INVEST)");
         investToken.transferFrom(msg.sender, address(this), amount);
         bids[companyId].push(Bid(msg.sender, amount));
         emit BidPlaced(companyId, msg.sender, amount);

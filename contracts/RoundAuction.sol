@@ -107,12 +107,20 @@ contract RoundAuction is ERC721, Ownable {
         emit CompanyListed(companyId, name, totalShares, companies[companyId].roundEnd);
     }
 
+    /// @notice Same real gap closed as ShareAuction's MIN_BID: "> 0" alone
+    /// permits a bid as small as one wei-unit. Matters even more here —
+    /// beyond the same bid-count gas-spam risk, an extreme low bid also
+    /// distorts settleRound()'s baseline (the LOWEST active bid sets
+    /// everyone else's proportional entitlement), so a near-zero bid could
+    /// inflate other bidders' entitlements to absurd multiples.
+    uint256 public constant MIN_BID = 1 * 10 ** 18; // 1 whole INVEST
+
     function placeBid(uint256 companyId, uint256 amount) external {
         Company storage c = companies[companyId];
         require(c.totalShares > 0, "RoundAuction: unknown company");
         require(!c.finalized, "RoundAuction: sold out");
         require(block.timestamp < c.roundEnd, "RoundAuction: round closed, awaiting settlement");
-        require(amount > 0, "RoundAuction: bid must be > 0");
+        require(amount >= MIN_BID, "RoundAuction: bid below minimum (1 INVEST)");
         investToken.transferFrom(msg.sender, address(this), amount);
         bids[companyId].push(RoundBid(msg.sender, amount, true));
         emit BidPlaced(companyId, msg.sender, amount, bids[companyId].length - 1);
