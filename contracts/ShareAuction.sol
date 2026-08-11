@@ -408,6 +408,34 @@ contract ShareAuction is ERC721, Ownable {
         emit Voted(companyId, round, msg.sender, candidate, weight);
     }
 
+    /// @notice corporateHolder(fromCompanyId) has no private key — nothing
+    /// can ever sign a transaction as it, since it's a synthetic address
+    /// computed purely so the NFT standard has something to point
+    /// ownerOf() at (see corporateHolder() below). That meant a real,
+    /// counted stake — shares one company holds in another via invest() —
+    /// contributed to a target company's 50%-assigned governance
+    /// threshold but could never actually cast a vote, permanently inert.
+    /// This closes that gap: the INVESTING company's own governor, using
+    /// their real operating key, casts the vote on behalf of whatever
+    /// weight their corporateHolder actually holds in the target company —
+    /// same underlying vote-tracking state as vote() above, just keyed by
+    /// the corporate address instead of msg.sender directly.
+    function voteAsCorporation(uint256 fromCompanyId, uint256 toCompanyId, address candidate) external onlyGovernor(fromCompanyId) {
+        uint256 round = governanceRound[toCompanyId];
+        require(round > 0, "ShareAuction: voting not open");
+        require(block.timestamp < governanceVoteEnd[toCompanyId], "ShareAuction: voting closed");
+        require(candidates[toCompanyId][candidate].registered, "ShareAuction: not a candidate");
+        require(!eliminated[toCompanyId][candidate], "ShareAuction: candidate eliminated");
+        address corp = corporateHolder(fromCompanyId);
+        require(!roundHasVoted[toCompanyId][round][corp], "ShareAuction: already voted this round");
+        uint256 weight = companyShareCount[toCompanyId][corp];
+        require(weight > 0, "ShareAuction: no shares held there");
+        roundHasVoted[toCompanyId][round][corp] = true;
+        roundVotes[toCompanyId][round][candidate] += weight;
+        roundTotalVotesCast[toCompanyId][round] += weight;
+        emit Voted(toCompanyId, round, corp, candidate, weight);
+    }
+
     /// @notice Callable by anyone once the round's window has closed. Elects
     /// the governor if someone cleared 51% of votes cast this round.
     /// Otherwise this is a runoff: every candidate except the current top
