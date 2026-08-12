@@ -8,8 +8,9 @@
 // through Remix — see /contracts/README.md for the full deploy log):
 export const CONTRACT_ADDRESSES = {
   InvestToken: "0xfA6b90eeDFaDd36A75Eb7DC9D1e87357166b3585",
-  ShareAuction: "0x22D7725DB9239fF7E4F5fe5F096e65f105674086",
-  CompanyTreasury: "0xa88931fa78a9CA6281733b3Bc297cdaF58A6f7B0",
+  ShareAuction: "0x38E02e24Fddc1F34a8F5BDFD1cc308407627c766",
+  CompanyTreasury: "0x475A8c0dC244cBEb4AB648b552c07ca7834b8BF9",
+  RoundAuction: "0xbf41381a33D637AaB61AfDCfe269b463E2A13cff",
 };
 
 export const SEPOLIA_CHAIN_ID = "0xaa36a7"; // 11155111 in hex, what MetaMask expects
@@ -37,11 +38,13 @@ export function getMetaMaskDeepLink() {
 import InvestTokenABI from "./contracts/InvestToken.json";
 import ShareAuctionABI from "./contracts/ShareAuction.json";
 import CompanyTreasuryABI from "./contracts/CompanyTreasury.json";
+import RoundAuctionABI from "./contracts/RoundAuction.json";
 
 export const ABIS = {
   InvestToken: InvestTokenABI,
   ShareAuction: ShareAuctionABI,
   CompanyTreasury: CompanyTreasuryABI,
+  RoundAuction: RoundAuctionABI,
 };
 
 // Lazily imports ethers only when actually needed — keeps it out of the
