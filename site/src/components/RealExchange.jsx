@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Wallet as WalletIcon, ExternalLink, Loader2 } from "lucide-react";
 import { connectWallet, getClaimEligibility, claimReal, CONTRACT_ADDRESSES, isMobileDevice, getMetaMaskDeepLink } from "../web3.js";
 import RealAuctions from "./RealAuctions.jsx";
+import RealRoundAuctions from "./RealRoundAuctions.jsx";
 
 // This screen talks to the REAL deployed contracts on Sepolia — not the
 // simulated game. Kept as its own component, deliberately separate from
@@ -144,6 +145,8 @@ export default function RealExchange({ onBack }) {
             )}
 
             <RealAuctions wallet={wallet} />
+
+            <RealRoundAuctions wallet={wallet} />
           </div>
         )}
 

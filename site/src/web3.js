@@ -334,3 +334,77 @@ export async function generateOperatingKeypair() {
   const { Wallet } = await getEthers();
   return Wallet.createRandom(); // has .address and .privateKey
 }
+
+// ---- RoundAuction (Stage 2, part 3 — the round-based proportional auction) ----
+
+export async function getListedRoundCompanies(provider) {
+  const roundAuction = await getContract("RoundAuction", provider);
+  const ids = Array.from({ length: COMPANY_ID_PROBE_RANGE }, (_, i) => i);
+  const results = await Promise.all(
+    ids.map(async (id) => {
+      const c = await roundAuction.companies(id);
+      // Explicit field access, not a spread — same real bug fixed earlier
+      // tonight in getListedCompanies() applies identically here.
+      return {
+        id,
+        name: c.name,
+        totalShares: c.totalShares,
+        sharesIssued: c.sharesIssued,
+        currentRound: c.currentRound,
+        roundEnd: c.roundEnd,
+        roundDuration: c.roundDuration,
+        finalized: c.finalized,
+        firstMintedAt: c.firstMintedAt,
+      };
+    })
+  );
+  return results.filter((c) => c.totalShares > 0n);
+}
+
+// Every bid ever placed, active or not — the same event-log + live-state
+// pattern as getCompanyBids()/getCandidates(): the log tells us which
+// indices exist, but only a fresh read of bids(companyId, index) tells us
+// whether a given bid is still active, since settleRound() can flip that
+// after the event fired.
+export async function getRoundBids(companyId, provider) {
+  const roundAuction = await getContract("RoundAuction", provider);
+  const filter = roundAuction.filters.BidPlaced(companyId);
+  const events = await queryFilterChunked(roundAuction, filter);
+  const bids = await Promise.all(
+    events.map(async (e) => {
+      const bidIndex = e.args[3];
+      const b = await roundAuction.bids(companyId, bidIndex);
+      return {
+        bidIndex,
+        bidder: b.bidder,
+        amount: b.amount,
+        active: b.active,
+      };
+    })
+  );
+  return bids;
+}
+
+export async function getRoundInvestAllowance(ownerAddress, provider) {
+  const investToken = await getContract("InvestToken", provider);
+  return investToken.allowance(ownerAddress, CONTRACT_ADDRESSES.RoundAuction);
+}
+
+export async function approveInvestForRound(signer, amount) {
+  const investToken = await getContract("InvestToken", signer);
+  const tx = await investToken.approve(CONTRACT_ADDRESSES.RoundAuction, amount);
+  return tx.wait();
+}
+
+export async function placeRoundBid(signer, companyId, amount) {
+  const roundAuction = await getContract("RoundAuction", signer);
+  const tx = await roundAuction.placeBid(companyId, amount);
+  return tx.wait();
+}
+
+// Permissionless — anyone can trigger this once a round's window closes.
+export async function settleRoundReal(signer, companyId) {
+  const roundAuction = await getContract("RoundAuction", signer);
+  const tx = await roundAuction.settleRound(companyId);
+  return tx.wait();
+}
