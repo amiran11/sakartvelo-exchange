@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Wallet as WalletIcon, ExternalLink, Loader2 } from "lucide-react";
-import { connectWallet, getClaimEligibility, claimReal, CONTRACT_ADDRESSES, isMobileDevice, getMetaMaskDeepLink } from "../web3.js";
+import { connectWallet, getClaimEligibility, claimReal, CONTRACT_ADDRESSES, ACTIVE_NETWORK, isMobileDevice, getMetaMaskDeepLink } from "../web3.js";
 import RealAuctions from "./RealAuctions.jsx";
 import RealRoundAuctions from "./RealRoundAuctions.jsx";
 
@@ -54,7 +54,7 @@ export default function RealExchange({ onBack }) {
       <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: "1px solid rgba(237,230,214,0.15)" }}>
         <div className="flex items-center gap-2">
           <img src="/favicon.svg" alt="" width="26" height="26" style={{ borderRadius: 6 }} />
-          <div className="zilla" style={{ fontSize: 20, fontWeight: 700 }}>SAKARTVELO EXCHANGE — LIVE (Sepolia)</div>
+          <div className="zilla" style={{ fontSize: 20, fontWeight: 700 }}>SAKARTVELO EXCHANGE — LIVE ({ACTIVE_NETWORK.label})</div>
         </div>
         <button onClick={onBack} className="mono" style={{ fontSize: 11, background: "rgba(237,230,214,0.08)", border: "none", color: "#EDE6D6", cursor: "pointer", padding: "8px 14px", borderRadius: 3 }}>
           ← BACK TO DEMO
@@ -64,12 +64,24 @@ export default function RealExchange({ onBack }) {
       <div className="px-6 py-12" style={{ maxWidth: 640, margin: "0 auto" }}>
         <div style={{ background: "rgba(201,138,62,0.12)", border: "1px solid #C98A3E", borderRadius: 4, padding: "14px 16px", marginBottom: 32 }}>
           <div className="mono" style={{ fontSize: 11, fontWeight: 700, color: "#C98A3E", marginBottom: 4 }}>
-            ⚠ REAL TRANSACTIONS, TEST NETWORK
+            {ACTIVE_NETWORK.isTestnet ? "⚠ REAL TRANSACTIONS, TEST NETWORK" : "⚠ REAL TRANSACTIONS, REAL MONEY"}
           </div>
           <div style={{ fontSize: 12.5, lineHeight: 1.55, opacity: 0.85 }}>
-            This screen calls the actual deployed contracts on Sepolia — real transactions, real gas,
-            real confirmations. Sepolia ETH has no monetary value, but the mechanism itself is fully real,
-            not simulated. You'll need a verified wallet and a small amount of Sepolia ETH for gas.
+            {ACTIVE_NETWORK.isTestnet ? (
+              <>
+                This screen calls the actual deployed contracts on {ACTIVE_NETWORK.label} — real transactions, real gas,
+                real confirmations. {ACTIVE_NETWORK.label} ETH has no monetary value, but the mechanism itself is fully real,
+                not simulated. You'll need a verified wallet and a small amount of {ACTIVE_NETWORK.label} ETH for gas.
+              </>
+            ) : (
+              <>
+                This screen calls the actual deployed contracts on {ACTIVE_NETWORK.label} — a real network where
+                gas costs real money and every transaction is permanent and irreversible. Gas fees here are
+                small (typically well under a cent per action), but they are real. You'll need a verified
+                wallet and a small amount of ETH on {ACTIVE_NETWORK.label} to participate. INVEST itself remains
+                part of a fictional simulation — not a real financial product or investment.
+              </>
+            )}
           </div>
         </div>
 
@@ -133,7 +145,7 @@ export default function RealExchange({ onBack }) {
               <div style={{ background: "rgba(79,122,82,0.15)", border: "1px solid #4F7A52", borderRadius: 6, padding: 16 }}>
                 <div className="mono" style={{ fontSize: 12, marginBottom: 6 }}>✅ Claimed for real.</div>
                 <a
-                  href={`https://sepolia.etherscan.io/tx/${txHash}`}
+                  href={`${ACTIVE_NETWORK.blockExplorerUrls[0]}/tx/${txHash}`}
                   target="_blank"
                   rel="noreferrer"
                   className="mono flex items-center gap-1"
@@ -168,10 +180,11 @@ export default function RealExchange({ onBack }) {
         )}
 
         <div className="mono" style={{ fontSize: 10, opacity: 0.4, marginTop: 40, lineHeight: 1.6 }}>
-          Contract addresses (Sepolia):<br/>
+          Contract addresses ({ACTIVE_NETWORK.label}):<br/>
           InvestToken: {CONTRACT_ADDRESSES.InvestToken}<br/>
           ShareAuction: {CONTRACT_ADDRESSES.ShareAuction}<br/>
-          CompanyTreasury: {CONTRACT_ADDRESSES.CompanyTreasury}
+          CompanyTreasury: {CONTRACT_ADDRESSES.CompanyTreasury}<br/>
+          RoundAuction: {CONTRACT_ADDRESSES.RoundAuction}
         </div>
       </div>
     </div>

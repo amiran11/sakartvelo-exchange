@@ -1,19 +1,60 @@
 // src/web3.js
 //
 // The REAL blockchain layer, entirely separate from the simulated game
-// in App.jsx. This is Stage 1 of connecting the site to the actual
-// deployed Sepolia contracts: wallet connection + a real claim().
+// in App.jsx. Originally built against Sepolia; now network-aware, with
+// Arbitrum One prepared as the first real-money deployment target.
 //
-// Deployed addresses (Sepolia testnet, deployed and wired by hand
-// through Remix — see /contracts/README.md for the full deploy log):
-export const CONTRACT_ADDRESSES = {
-  InvestToken: "0xfA6b90eeDFaDd36A75Eb7DC9D1e87357166b3585",
-  ShareAuction: "0x38E02e24Fddc1F34a8F5BDFD1cc308407627c766",
-  CompanyTreasury: "0x475A8c0dC244cBEb4AB648b552c07ca7834b8BF9",
-  RoundAuction: "0xbf41381a33D637AaB61AfDCfe269b463E2A13cff",
+// To flip networks after the Arbitrum contracts are actually deployed:
+// fill in NETWORKS.arbitrum.addresses + deploymentBlock, then change
+// ACTIVE_NETWORK below. Nothing else in the app should need touching —
+// every chain-specific value flows from this one config.
+export const NETWORKS = {
+  sepolia: {
+    chainIdHex: "0xaa36a7", // 11155111
+    chainName: "Sepolia",
+    nativeCurrency: { name: "Sepolia ETH", symbol: "ETH", decimals: 18 },
+    rpcUrls: ["https://ethereum-sepolia-rpc.publicnode.com"],
+    blockExplorerUrls: ["https://sepolia.etherscan.io"],
+    label: "Sepolia",
+    isTestnet: true,
+    deploymentBlock: 11377900,
+    addresses: {
+      InvestToken: "0xfA6b90eeDFaDd36A75Eb7DC9D1e87357166b3585",
+      ShareAuction: "0x38E02e24Fddc1F34a8F5BDFD1cc308407627c766",
+      CompanyTreasury: "0x475A8c0dC244cBEb4AB648b552c07ca7834b8BF9",
+      RoundAuction: "0xbf41381a33D637AaB61AfDCfe269b463E2A13cff",
+    },
+  },
+  arbitrum: {
+    chainIdHex: "0xa4b1", // 42161
+    chainName: "Arbitrum One",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrls: ["https://arb1.arbitrum.io/rpc"],
+    blockExplorerUrls: ["https://arbiscan.io"],
+    label: "Arbitrum One",
+    isTestnet: false,
+    // TODO after the real Arbitrum deployment: set the actual first
+    // deployment block (Arbitrum block numbers are far higher than
+    // Ethereum's — read it off the deploy receipt, do not guess).
+    deploymentBlock: 0,
+    addresses: {
+      // TODO after the real Arbitrum deployment — leaving these empty
+      // is deliberate: getContract() throws loudly on an empty address
+      // rather than silently calling a wrong/zero one.
+      InvestToken: "",
+      ShareAuction: "",
+      CompanyTreasury: "",
+      RoundAuction: "",
+    },
+  },
 };
 
-export const SEPOLIA_CHAIN_ID = "0xaa36a7"; // 11155111 in hex, what MetaMask expects
+// The one line to change when going live on Arbitrum.
+export const ACTIVE_NETWORK = NETWORKS.sepolia;
+
+export const CONTRACT_ADDRESSES = ACTIVE_NETWORK.addresses;
+
+export const SEPOLIA_CHAIN_ID = ACTIVE_NETWORK.chainIdHex; // kept for compatibility; now network-aware
 
 // Rough but reliable-enough mobile detection — good enough to decide
 // which error message and recovery path to show, not used for anything
@@ -74,14 +115,15 @@ export async function connectWallet() {
   // Ask for account access
   await window.ethereum.request({ method: "eth_requestAccounts" });
 
-  // Make sure we're on Sepolia — offer to switch, or add it if it's
-  // never been added to this wallet before.
+  // Make sure we're on the active network — offer to switch, or add it
+  // if it's never been added to this wallet before. All params flow from
+  // ACTIVE_NETWORK, nothing chain-specific hardcoded here anymore.
   const currentChainId = await window.ethereum.request({ method: "eth_chainId" });
-  if (currentChainId !== SEPOLIA_CHAIN_ID) {
+  if (currentChainId !== ACTIVE_NETWORK.chainIdHex) {
     try {
       await window.ethereum.request({
         method: "wallet_switchEthereumChain",
-        params: [{ chainId: SEPOLIA_CHAIN_ID }],
+        params: [{ chainId: ACTIVE_NETWORK.chainIdHex }],
       });
     } catch (switchError) {
       // 4902 = chain not added to this wallet yet
@@ -90,11 +132,11 @@ export async function connectWallet() {
           method: "wallet_addEthereumChain",
           params: [
             {
-              chainId: SEPOLIA_CHAIN_ID,
-              chainName: "Sepolia",
-              nativeCurrency: { name: "Sepolia ETH", symbol: "ETH", decimals: 18 },
-              rpcUrls: ["https://ethereum-sepolia-rpc.publicnode.com"],
-              blockExplorerUrls: ["https://sepolia.etherscan.io"],
+              chainId: ACTIVE_NETWORK.chainIdHex,
+              chainName: ACTIVE_NETWORK.chainName,
+              nativeCurrency: ACTIVE_NETWORK.nativeCurrency,
+              rpcUrls: ACTIVE_NETWORK.rpcUrls,
+              blockExplorerUrls: ACTIVE_NETWORK.blockExplorerUrls,
             },
           ],
         });
@@ -114,8 +156,15 @@ export async function connectWallet() {
 // Returns an ethers Contract instance connected to a signer (for writes)
 // or a provider (for reads only).
 export async function getContract(name, signerOrProvider) {
+  const address = CONTRACT_ADDRESSES[name];
+  if (!address) {
+    // Deliberate loud failure: the Arbitrum config ships with empty
+    // addresses until the real deployment happens. Throwing here beats
+    // ethers quietly constructing a Contract against a bad target.
+    throw new Error(`${name} has no address configured for ${ACTIVE_NETWORK.label} yet.`);
+  }
   const { Contract } = await getEthers();
-  return new Contract(CONTRACT_ADDRESSES[name], ABIS[name], signerOrProvider);
+  return new Contract(address, ABIS[name], signerOrProvider);
 }
 
 // Real read-only checks against InvestToken — used to show accurate
@@ -163,7 +212,7 @@ const COMPANY_ID_PROBE_RANGE = 20;
 // company — silently breaking "Loading bid history..." forever, and
 // making a genuinely successful bid look like a failure in the UI,
 // since the post-bid refresh call was throwing right after.
-const DEPLOYMENT_BLOCK = 11377900;
+const DEPLOYMENT_BLOCK = ACTIVE_NETWORK.deploymentBlock;
 
 async function queryFilterChunked(contract, filter, fromBlock = DEPLOYMENT_BLOCK) {
   const latest = await contract.runner.provider.getBlockNumber();
