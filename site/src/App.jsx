@@ -610,7 +610,7 @@ export default function App() {
             className="mono"
             style={{ fontSize: 11, letterSpacing: 0.5, background: "rgba(201,138,62,0.15)", border: "1px solid #C98A3E", color: "#C98A3E", cursor: "pointer", padding: "6px 10px", borderRadius: 3 }}
           >
-            LIVE ON SEPOLIA
+            LIVE ON ARBITRUM
           </button>
           <button
             onClick={() => wallet && setShowExport(true)}

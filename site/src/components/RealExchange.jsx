@@ -4,9 +4,9 @@ import { connectWallet, getClaimEligibility, claimReal, CONTRACT_ADDRESSES, ACTI
 import RealAuctions from "./RealAuctions.jsx";
 import RealRoundAuctions from "./RealRoundAuctions.jsx";
 
-// This screen talks to the REAL deployed contracts on Sepolia — not the
-// simulated game. Kept as its own component, deliberately separate from
-// App.jsx's simulation, so it's obvious which one is real.
+// This screen talks to the REAL deployed contracts on Arbitrum One — not
+// the simulated game. Kept as its own component, deliberately separate
+// from App.jsx's simulation, so it's obvious which one is real.
 export default function RealExchange({ onBack }) {
   const [wallet, setWallet] = useState(null); // { provider, signer, address }
   const [eligibility, setEligibility] = useState(null);

@@ -33,24 +33,20 @@ export const NETWORKS = {
     blockExplorerUrls: ["https://arbiscan.io"],
     label: "Arbitrum One",
     isTestnet: false,
-    // TODO after the real Arbitrum deployment: set the actual first
-    // deployment block (Arbitrum block numbers are far higher than
-    // Ethereum's — read it off the deploy receipt, do not guess).
-    deploymentBlock: 0,
+    // First deployment tx on Arbitrum One was InvestToken's constructor,
+    // mined at block 500861978 — read directly off the deploy receipt.
+    deploymentBlock: 500861978,
     addresses: {
-      // TODO after the real Arbitrum deployment — leaving these empty
-      // is deliberate: getContract() throws loudly on an empty address
-      // rather than silently calling a wrong/zero one.
-      InvestToken: "",
-      ShareAuction: "",
-      CompanyTreasury: "",
-      RoundAuction: "",
+      InvestToken: "0x14637417015D872d7117CfcE2Cdd9A7D5cc52FD1",
+      ShareAuction: "0x5f93792a067E207325Ef90b0518C68294Fe75894",
+      CompanyTreasury: "0x8eD3E8790D27A1038371aB8AAeD468a9bd4f4C9A",
+      RoundAuction: "0x772F5A44C3d22226bF898A44967e9CcF99D6e53A",
     },
   },
 };
 
-// The one line to change when going live on Arbitrum.
-export const ACTIVE_NETWORK = NETWORKS.sepolia;
+// Live on Arbitrum One as of this deployment.
+export const ACTIVE_NETWORK = NETWORKS.arbitrum;
 
 export const CONTRACT_ADDRESSES = ACTIVE_NETWORK.addresses;
 
