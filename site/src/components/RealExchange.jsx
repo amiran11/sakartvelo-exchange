@@ -1,8 +1,15 @@
 import { useState } from "react";
 import { Wallet as WalletIcon, ExternalLink, Loader2 } from "lucide-react";
-import { connectWallet, getClaimEligibility, claimReal, CONTRACT_ADDRESSES, ACTIVE_NETWORK, isMobileDevice, getMetaMaskDeepLink } from "../web3.js";
+import { connectWallet, getClaimEligibility, claimReal, getVerifySelfEligibility, verifySelfReal, CONTRACT_ADDRESSES, ACTIVE_NETWORK, isMobileDevice, getMetaMaskDeepLink } from "../web3.js";
 import RealAuctions from "./RealAuctions.jsx";
 import RealRoundAuctions from "./RealRoundAuctions.jsx";
+
+// Simple wei -> ETH display formatter, enough precision to distinguish
+// "just under the threshold" from "comfortably over it" without dragging
+// in a full formatting library for one small message.
+function formatEth(wei) {
+  return (Number(wei) / 1e18).toFixed(4);
+}
 
 // This screen talks to the REAL deployed contracts on Arbitrum One — not
 // the simulated game. Kept as its own component, deliberately separate
@@ -10,7 +17,8 @@ import RealRoundAuctions from "./RealRoundAuctions.jsx";
 export default function RealExchange({ onBack }) {
   const [wallet, setWallet] = useState(null); // { provider, signer, address }
   const [eligibility, setEligibility] = useState(null);
-  const [status, setStatus] = useState("idle"); // idle | connecting | checking | claiming | claimed | error
+  const [verifyEligibility, setVerifyEligibility] = useState(null);
+  const [status, setStatus] = useState("idle"); // idle | connecting | checking | verifying | claiming | claimed | error
   const [errorMsg, setErrorMsg] = useState("");
   const [isMobileWalletError, setIsMobileWalletError] = useState(false);
   const [txHash, setTxHash] = useState(null);
@@ -23,12 +31,35 @@ export default function RealExchange({ onBack }) {
       const w = await connectWallet();
       setWallet(w);
       setStatus("checking");
-      const e = await getClaimEligibility(w.address, w.provider);
+      const [e, v] = await Promise.all([
+        getClaimEligibility(w.address, w.provider),
+        getVerifySelfEligibility(w.address, w.provider),
+      ]);
       setEligibility(e);
+      setVerifyEligibility(v);
       setStatus("idle");
     } catch (err) {
       setErrorMsg(err.message || "Connection failed.");
       setIsMobileWalletError(!!err.isMobileNoWallet);
+      setStatus("error");
+    }
+  };
+
+  const handleVerifySelf = async () => {
+    if (!wallet) return;
+    setStatus("verifying");
+    setErrorMsg("");
+    try {
+      await verifySelfReal(wallet.signer);
+      const [e, v] = await Promise.all([
+        getClaimEligibility(wallet.address, wallet.provider),
+        getVerifySelfEligibility(wallet.address, wallet.provider),
+      ]);
+      setEligibility(e);
+      setVerifyEligibility(v);
+      setStatus("idle");
+    } catch (err) {
+      setErrorMsg(err.shortMessage || err.message || "Verification transaction failed.");
       setStatus("error");
     }
   };
@@ -132,9 +163,25 @@ export default function RealExchange({ onBack }) {
                     {status === "claiming" ? "CONFIRMING ON-CHAIN..." : "CLAIM 1000 INVEST (REAL TRANSACTION)"}
                   </button>
                 ) : !eligibility.isVerified ? (
-                  <div className="mono" style={{ marginTop: 16, fontSize: 12, color: "#C97D6F" }}>
-                    This wallet isn't verified yet. The contract owner needs to call setVerifiedCitizen() for this address first.
-                  </div>
+                  verifyEligibility?.eligible ? (
+                    <button
+                      onClick={handleVerifySelf}
+                      disabled={status === "verifying"}
+                      className="mono flex items-center gap-2"
+                      style={{ marginTop: 16, background: "#EDE6D6", color: "#1C1A16", border: "none", padding: "10px 22px", borderRadius: 3, fontWeight: 700, cursor: "pointer", fontSize: 13 }}
+                    >
+                      {status === "verifying" ? <Loader2 size={14} className="animate-spin" /> : null}
+                      {status === "verifying" ? "CONFIRMING ON-CHAIN..." : "VERIFY THIS WALLET (REAL TRANSACTION)"}
+                    </button>
+                  ) : verifyEligibility ? (
+                    <div className="mono" style={{ marginTop: 16, fontSize: 12, color: "#C97D6F", lineHeight: 1.6 }}>
+                      This wallet needs at least {formatEth(verifyEligibility.minBalance)} ETH to self-verify
+                      (currently holds {formatEth(verifyEligibility.currentBalance)} ETH). This threshold exists to
+                      make it costly to spin up throwaway wallets purely to claim repeatedly.
+                    </div>
+                  ) : (
+                    <div className="mono" style={{ marginTop: 16, fontSize: 12, opacity: 0.6 }}>Checking verification eligibility…</div>
+                  )
                 ) : eligibility.alreadyClaimed ? (
                   <div className="mono" style={{ marginTop: 16, fontSize: 12, opacity: 0.6 }}>Already claimed — nothing left to do here.</div>
                 ) : null}
@@ -184,7 +231,8 @@ export default function RealExchange({ onBack }) {
           InvestToken: {CONTRACT_ADDRESSES.InvestToken}<br/>
           ShareAuction: {CONTRACT_ADDRESSES.ShareAuction}<br/>
           CompanyTreasury: {CONTRACT_ADDRESSES.CompanyTreasury}<br/>
-          RoundAuction: {CONTRACT_ADDRESSES.RoundAuction}
+          RoundAuction: {CONTRACT_ADDRESSES.RoundAuction}<br/>
+          OpenVerifier: {CONTRACT_ADDRESSES.OpenVerifier}
         </div>
       </div>
     </div>

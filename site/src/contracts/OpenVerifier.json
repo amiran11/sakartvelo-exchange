@@ -1,0 +1,42 @@
+[
+  {
+    "inputs": [
+      { "internalType": "address", "name": "_investToken", "type": "address" }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "address", "name": "citizen", "type": "address" }
+    ],
+    "name": "SelfVerified",
+    "type": "event"
+  },
+  {
+    "inputs": [],
+    "name": "MIN_BALANCE",
+    "outputs": [
+      { "internalType": "uint256", "name": "", "type": "uint256" }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "investToken",
+    "outputs": [
+      { "internalType": "contract InvestToken", "name": "", "type": "address" }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "verifySelf",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
+]

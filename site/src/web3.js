@@ -23,6 +23,7 @@ export const NETWORKS = {
       ShareAuction: "0x38E02e24Fddc1F34a8F5BDFD1cc308407627c766",
       CompanyTreasury: "0x475A8c0dC244cBEb4AB648b552c07ca7834b8BF9",
       RoundAuction: "0xbf41381a33D637AaB61AfDCfe269b463E2A13cff",
+      OpenVerifier: "",
     },
   },
   arbitrum: {
@@ -41,6 +42,7 @@ export const NETWORKS = {
       ShareAuction: "0x10C6e7fA593Bb0F598611E094bd578e0DB482C0B",
       CompanyTreasury: "0xbEe04358Aa816e4Be951b0E7EDD997e7fb81a674",
       RoundAuction: "0x1e973B55e4Cc94E34B0eD38d6cDaCE3745B9F693",
+      OpenVerifier: "0xAB18a706180805DC2627bf61d59A62EB93003162",
     },
   },
 };
@@ -76,12 +78,14 @@ import InvestTokenABI from "./contracts/InvestToken.json";
 import ShareAuctionABI from "./contracts/ShareAuction.json";
 import CompanyTreasuryABI from "./contracts/CompanyTreasury.json";
 import RoundAuctionABI from "./contracts/RoundAuction.json";
+import OpenVerifierABI from "./contracts/OpenVerifier.json";
 
 export const ABIS = {
   InvestToken: InvestTokenABI,
   ShareAuction: ShareAuctionABI,
   CompanyTreasury: CompanyTreasuryABI,
   RoundAuction: RoundAuctionABI,
+  OpenVerifier: OpenVerifierABI,
 };
 
 // Lazily imports ethers only when actually needed — keeps it out of the
@@ -161,6 +165,35 @@ export async function getContract(name, signerOrProvider) {
   }
   const { Contract } = await getEthers();
   return new Contract(address, ABIS[name], signerOrProvider);
+}
+
+// Checks whether a wallet can call OpenVerifier.verifySelf() right now —
+// specifically, whether it holds enough ETH to clear MIN_BALANCE. Read
+// live rather than hardcoded, since MIN_BALANCE could change if
+// OpenVerifier is ever redeployed with a different threshold.
+export async function getVerifySelfEligibility(address, provider) {
+  const openVerifier = await getContract("OpenVerifier", provider);
+  const [minBalance, currentBalance] = await Promise.all([
+    openVerifier.MIN_BALANCE(),
+    provider.getBalance(address),
+  ]);
+  return {
+    minBalance,
+    currentBalance,
+    eligible: currentBalance >= minBalance,
+  };
+}
+
+// The real self-verification transaction. Anyone can call this for
+// themselves (see OpenVerifier.sol) as long as their wallet clears
+// MIN_BALANCE — no owner/verifier approval needed. Returns the receipt
+// once mined; callers should re-check getClaimEligibility() afterward
+// since verifiedCitizen only flips true once this is actually mined.
+export async function verifySelfReal(signer) {
+  const openVerifier = await getContract("OpenVerifier", signer);
+  const tx = await openVerifier.verifySelf();
+  const receipt = await tx.wait();
+  return receipt;
 }
 
 // Real read-only checks against InvestToken — used to show accurate
