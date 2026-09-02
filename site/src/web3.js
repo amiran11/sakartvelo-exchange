@@ -34,15 +34,17 @@ export const NETWORKS = {
     blockExplorerUrls: ["https://arbiscan.io"],
     label: "Arbitrum One",
     isTestnet: false,
-    // First deployment tx on Arbitrum One was InvestToken's constructor,
-    // mined at block 500861978 — read directly off the deploy receipt.
-    deploymentBlock: 500861978,
+    // InvestToken v3's constructor (this round's redeploy, adding the
+    // roundAuctionForTradability hook) was mined at block 500921215 —
+    // read directly off the deploy receipt, the earliest relevant block
+    // for this contract set.
+    deploymentBlock: 500921215,
     addresses: {
-      InvestToken: "0x14637417015D872d7117CfcE2Cdd9A7D5cc52FD1",
-      ShareAuction: "0x10C6e7fA593Bb0F598611E094bd578e0DB482C0B",
-      CompanyTreasury: "0xbEe04358Aa816e4Be951b0E7EDD997e7fb81a674",
-      RoundAuction: "0x1e973B55e4Cc94E34B0eD38d6cDaCE3745B9F693",
-      OpenVerifier: "0xAB18a706180805DC2627bf61d59A62EB93003162",
+      InvestToken: "0x38E02e24Fddc1F34a8F5BDFD1cc308407627c766",
+      ShareAuction: "0x475A8c0dC244cBEb4AB648b552c07ca7834b8BF9",
+      CompanyTreasury: "0xbf41381a33D637AaB61AfDCfe269b463E2A13cff",
+      RoundAuction: "0x3afaa8deB47362EcB07276B28610e03c506F9771",
+      OpenVerifier: "0x4Be82ae3f86Bdf35725f686b33b8FfB9a8aE6512",
     },
   },
 };

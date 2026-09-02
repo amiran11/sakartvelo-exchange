@@ -10,6 +10,17 @@ interface IShareAuction {
     function privatizationConcluded() external view returns (bool);
 }
 
+/// @dev Minimal interface into RoundAuction — used only to check whether
+/// any company has crossed the 51% threshold that globally unlocks free
+/// INVEST transfers. Kept separate from IShareAuction/auctionHouse
+/// deliberately: those exist for a different purpose (gating new citizen
+/// claims once ShareAuction-tracked privatization concludes) and, given
+/// RoundAuction is the contract actually used for real listings, mixing
+/// the two would tie an unrelated claim-gating mechanism to this one.
+interface IRoundAuction {
+    function globalTradabilityUnlocked() external view returns (bool);
+}
+
 /// @title InvestToken
 /// @notice A closed-loop, non-transferable ERC-20. Every wallet can claim one
 /// equal allocation. It can only be spent into the ShareAuction contract —
@@ -39,6 +50,19 @@ contract InvestToken is ERC20, Ownable {
     /// population (e.g. Georgia's citizen count), not left unbounded.
     uint256 public maxCitizens;
     uint256 public citizenCount;
+
+    /// @notice The RoundAuction instance checked for globalTradabilityUnlocked().
+    /// Set once by the owner after RoundAuction is deployed. Left at
+    /// address(0) until set — _update() below treats that as "not unlocked
+    /// yet" rather than reverting, same defensive pattern as auctionHouse.
+    address public roundAuctionForTradability;
+    event RoundAuctionForTradabilitySet(address indexed addr);
+
+    function setRoundAuctionForTradability(address _addr) external onlyOwner {
+        require(_addr != address(0), "InvestToken: zero address");
+        roundAuctionForTradability = _addr;
+        emit RoundAuctionForTradabilitySet(_addr);
+    }
 
     /// @dev On-chain code cannot tell whether two wallets belong to the same
     /// human — that's the fundamental sybil problem. This gate doesn't solve
@@ -155,11 +179,22 @@ contract InvestToken is ERC20, Ownable {
     /// exactly this reason — a trusted contract like CompanyTreasury needs
     /// to both receive citizen payments (bids, INVEST-market purchases) and
     /// pay citizens back out (refunds, dividends) from the same address.
+    ///
+    /// Once RoundAuction reports globalTradabilityUnlocked() == true (any
+    /// single company crossed 51% sold), the closed loop lifts entirely —
+    /// any wallet can freely transfer INVEST to any other wallet from that
+    /// point forward, including whatever a citizen's leftover personal
+    /// balance happens to be at the time. This is a one-way state change:
+    /// once unlocked, every transfer skips the restriction below, forever.
     function _update(address from, address to, uint256 value) internal override {
         if (from != address(0) && to != address(0)) {
-            bool citizenSpendingIn = (to == auctionHouse) || authorizedSink[to];
-            bool systemPayingOut = (from == auctionHouse) || authorizedSink[from];
-            require(citizenSpendingIn || systemPayingOut, "InvestToken: closed loop - citizens may only spend INVEST into the auction house or an authorized sink");
+            bool tradabilityUnlocked = roundAuctionForTradability != address(0)
+                && IRoundAuction(roundAuctionForTradability).globalTradabilityUnlocked();
+            if (!tradabilityUnlocked) {
+                bool citizenSpendingIn = (to == auctionHouse) || authorizedSink[to];
+                bool systemPayingOut = (from == auctionHouse) || authorizedSink[from];
+                require(citizenSpendingIn || systemPayingOut, "InvestToken: closed loop - citizens may only spend INVEST into the auction house or an authorized sink");
+            }
         }
         super._update(from, to, value);
     }

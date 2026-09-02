@@ -135,6 +135,26 @@ contract RoundAuction is ERC721, Ownable {
     /// out, only time.
     uint256 public constant MAX_SHARES_PER_ROUND = 1000;
 
+    /// @notice Once ANY single company's shares crossed this threshold
+    /// (51%, matching the same governance-eligibility figure used
+    /// elsewhere in this project), INVEST's closed-loop transfer
+    /// restriction lifts globally — for every wallet, not just that
+    /// company's shareholders. Deliberately a single company's progress,
+    /// not "all companies" or a global percentage: with the current
+    /// per-round issuance cap and share counts, requiring every company to
+    /// individually clear 51% could realistically never happen, or take
+    /// years. One company clearing the bar is treated as sufficient
+    /// real-world evidence that privatization is genuinely underway.
+    uint256 public constant TRADABILITY_THRESHOLD_BPS = 5100; // 51%
+
+    /// @notice Once true, stays true forever — this is a one-way unlock,
+    /// not something that re-locks if a company's percentage later shifts
+    /// (it can't shift downward anyway; shares are only ever minted, never
+    /// burned back into unsold state).
+    bool public globalTradabilityUnlocked;
+
+    event GlobalTradabilityUnlocked(uint256 indexed companyId, uint256 sharesIssued, uint256 totalShares);
+
     function placeBid(uint256 companyId, uint256 amount) external {
         Company storage c = companies[companyId];
         require(c.totalShares > 0, "RoundAuction: unknown company");
@@ -261,6 +281,11 @@ contract RoundAuction is ERC721, Ownable {
                 issuedThisRound += 1;
                 bid.active = false;
             }
+        }
+
+        if (!globalTradabilityUnlocked && c.sharesIssued * 10_000 >= c.totalShares * TRADABILITY_THRESHOLD_BPS) {
+            globalTradabilityUnlocked = true;
+            emit GlobalTradabilityUnlocked(companyId, c.sharesIssued, c.totalShares);
         }
 
         emit RoundSettled(companyId, c.currentRound, issuedThisRound, minAmount);
