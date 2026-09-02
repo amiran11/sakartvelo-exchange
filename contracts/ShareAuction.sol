@@ -284,6 +284,18 @@ contract ShareAuction is ERC721, Ownable {
     /// 1000 INVEST" the way it might have seemed to.
     uint256 public constant MIN_BID = 1 * 10 ** 18; // 1 whole INVEST
 
+    /// @notice Hard ceiling on total bids ever placed for a single company.
+    /// MIN_BID alone stops someone splitting a budget into unlimited
+    /// near-zero bids, but even at 1 INVEST minimum, enough distinct
+    /// bidders (or one bidder calling repeatedly) can still push bid
+    /// COUNT past what finalize()'s O(n^2) sort can process in one block
+    /// — and unlike a bad bid, there is no recovery from that: finalize()
+    /// would revert identically on every retry, forever, with every
+    /// bidder's INVEST stuck. 500 is comfortably below where that sort
+    /// becomes a real risk on Arbitrum, while remaining far above what any
+    /// real single-company auction is expected to draw.
+    uint256 public constant MAX_BIDS = 500;
+
     /// @notice Locks `amount` INVEST into this contract as a bid. A bidder
     /// may call this multiple times to raise their own standing bid.
     function placeBid(uint256 companyId, uint256 amount) external {
@@ -291,6 +303,7 @@ contract ShareAuction is ERC721, Ownable {
         require(c.totalShares > 0, "ShareAuction: unknown company");
         require(block.timestamp < c.auctionEnd, "ShareAuction: auction closed");
         require(amount >= MIN_BID, "ShareAuction: bid below minimum (1 INVEST)");
+        require(bids[companyId].length < MAX_BIDS, "ShareAuction: bid cap reached for this company");
         investToken.transferFrom(msg.sender, address(this), amount);
         bids[companyId].push(Bid(msg.sender, amount));
         emit BidPlaced(companyId, msg.sender, amount);

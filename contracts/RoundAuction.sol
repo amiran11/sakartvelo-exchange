@@ -115,12 +115,33 @@ contract RoundAuction is ERC721, Ownable {
     /// inflate other bidders' entitlements to absurd multiples.
     uint256 public constant MIN_BID = 1 * 10 ** 18; // 1 whole INVEST
 
+    /// @notice Same protection as ShareAuction's MAX_BIDS, and arguably more
+    /// necessary here: unwon bids carry forward round after round rather
+    /// than clearing, so total bid count only ever grows across a company's
+    /// lifetime — and settleRound()'s opening scan walks every bid ever
+    /// placed (won or not) to find active ones, every single round. Without
+    /// a ceiling, a company could accumulate enough historical bids over
+    /// many rounds to eventually make its own settlement gas-unaffordable,
+    /// even if no single round looked dangerous on its own.
+    uint256 public constant MAX_BIDS = 500;
+
+    /// @notice Hard ceiling on shares minted in a single settleRound()
+    /// call. This is what actually makes a large totalShares (e.g. a
+    /// company meant to sell millions of shares over its lifetime) safe:
+    /// MAX_BIDS bounds the sort/scan cost, this bounds the mint-loop cost.
+    /// A company simply takes more rounds to fully sell out once its
+    /// totalShares exceeds this — rounds already carry unfilled bids
+    /// forward automatically, so nothing is lost by spreading issuance
+    /// out, only time.
+    uint256 public constant MAX_SHARES_PER_ROUND = 1000;
+
     function placeBid(uint256 companyId, uint256 amount) external {
         Company storage c = companies[companyId];
         require(c.totalShares > 0, "RoundAuction: unknown company");
         require(!c.finalized, "RoundAuction: sold out");
         require(block.timestamp < c.roundEnd, "RoundAuction: round closed, awaiting settlement");
         require(amount >= MIN_BID, "RoundAuction: bid below minimum (1 INVEST)");
+        require(bids[companyId].length < MAX_BIDS, "RoundAuction: bid cap reached for this company");
         investToken.transferFrom(msg.sender, address(this), amount);
         bids[companyId].push(RoundBid(msg.sender, amount, true));
         emit BidPlaced(companyId, msg.sender, amount, bids[companyId].length - 1);
@@ -174,7 +195,24 @@ contract RoundAuction is ERC721, Ownable {
             idx[j] = key;
         }
 
-        uint256 sharesRemaining = c.totalShares - c.sharesIssued;
+        uint256 trueRemaining = c.totalShares - c.sharesIssued;
+        // Hard ceiling on mints in this single call, independent of how
+        // large totalShares is. Without this, a company with a large
+        // totalShares (meant to be sold across many rounds over time)
+        // could still see one round's entitlements add up to thousands
+        // of mints in one transaction — the same permanently-stuck-forever
+        // risk as an unbounded finalize(), just reachable through a
+        // different door. Capping issuance per round instead of per
+        // company lets totalShares be arbitrarily large and safe at the
+        // same time: it just takes more rounds to sell out, which this
+        // contract already handles natively via automatic carry-forward.
+        // Kept separate from `trueRemaining` deliberately — the finalized
+        // check below must compare against the company's real total, not
+        // this round's capped allowance, or a company would wrongly be
+        // marked sold out (and everyone else's bids refunded away) the
+        // moment the FIRST round's cap was hit, not when shares actually
+        // ran out.
+        uint256 sharesRemaining = trueRemaining > MAX_SHARES_PER_ROUND ? MAX_SHARES_PER_ROUND : trueRemaining;
         uint256 issuedThisRound = 0;
 
         for (uint256 k = 0; k < idx.length; k++) {
@@ -227,7 +265,7 @@ contract RoundAuction is ERC721, Ownable {
 
         emit RoundSettled(companyId, c.currentRound, issuedThisRound, minAmount);
 
-        if (sharesRemaining == 0) {
+        if (trueRemaining - issuedThisRound == 0) {
             c.finalized = true;
             uint256 refunded = 0;
             for (uint256 i = 0; i < b.length; i++) {

@@ -38,9 +38,9 @@ export const NETWORKS = {
     deploymentBlock: 500861978,
     addresses: {
       InvestToken: "0x14637417015D872d7117CfcE2Cdd9A7D5cc52FD1",
-      ShareAuction: "0x5f93792a067E207325Ef90b0518C68294Fe75894",
-      CompanyTreasury: "0x8eD3E8790D27A1038371aB8AAeD468a9bd4f4C9A",
-      RoundAuction: "0x772F5A44C3d22226bF898A44967e9CcF99D6e53A",
+      ShareAuction: "0x10C6e7fA593Bb0F598611E094bd578e0DB482C0B",
+      CompanyTreasury: "0xbEe04358Aa816e4Be951b0E7EDD997e7fb81a674",
+      RoundAuction: "0x1e973B55e4Cc94E34B0eD38d6cDaCE3745B9F693",
     },
   },
 };
