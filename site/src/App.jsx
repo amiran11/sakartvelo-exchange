@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, createContext, useContext } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import RealExchange from "./components/RealExchange.jsx";
 import ConsentBanner from "./components/ConsentBanner.jsx";
 import {
@@ -349,7 +350,41 @@ export default function App() {
     const entry = STRINGS[lang][key];
     return typeof entry === "function" ? entry(...args) : entry;
   };
-  const [view, setView] = useState("game");
+  // `view` used to be plain local state ("game" | "whitepaper" | "real"),
+  // meaning every section lived on one URL and nothing but the homepage
+  // was ever crawlable/indexable. It now derives from the real URL instead
+  // — /whitepaper and /live are genuine routes — while every existing
+  // setView("whitepaper" | "real" | "game") call elsewhere in this file
+  // keeps working completely unchanged, since setView here just
+  // translates to real navigation instead of local state.
+  const location = useLocation();
+  const navigate = useNavigate();
+  const view =
+    location.pathname === "/whitepaper" ? "whitepaper" :
+    location.pathname === "/live" ? "real" :
+    "game";
+  const setView = (v) => navigate(v === "whitepaper" ? "/whitepaper" : v === "real" ? "/live" : "/");
+
+  // Keep the tab title and meta description accurate per route — the
+  // static tags in index.html describe the homepage; client-side updates
+  // here matter because modern crawlers execute JS before indexing, so an
+  // accurate per-route title/description genuinely affects what shows up
+  // in search results for each page, not just what's in the browser tab.
+  useEffect(() => {
+    const titles = {
+      game: "Sakartvelo Exchange — Fictional Privatization Auction Simulation",
+      whitepaper: "Whitepaper — Sakartvelo Exchange",
+      real: "Live on Arbitrum One — Sakartvelo Exchange",
+    };
+    const descriptions = {
+      game: "A fictional privatization auction simulation — equal citizen allocations, competitive bidding, runoff-elected governors, and real Solidity contracts. Not a real financial product.",
+      whitepaper: "The full mechanism-design whitepaper for Sakartvelo Exchange: monetization, privatization, and capitalization phases, governance, and stated limitations.",
+      real: "Live, verified smart contracts on Arbitrum One. Connect a wallet, self-verify, claim INVEST, and bid on real proportional-round auctions.",
+    };
+    document.title = titles[view];
+    const metaDesc = document.querySelector('meta[name="description"]');
+    if (metaDesc) metaDesc.setAttribute("content", descriptions[view]);
+  }, [view]);
   const [phase, setPhase] = useState("landing");
   const [game, setGame] = useState(makeInitialState);
   const [now, setNow] = useState(Date.now());
