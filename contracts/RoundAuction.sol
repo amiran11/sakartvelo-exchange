@@ -3,6 +3,8 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Base64.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
 import "./InvestToken.sol";
 
 /// @title RoundAuction
@@ -317,5 +319,36 @@ contract RoundAuction is ERC721, Ownable {
             require(block.timestamp >= c.firstMintedAt + LOCK_PERIOD, "RoundAuction: shares still locked");
         }
         return super._update(to, tokenId, auth);
+    }
+
+    /// @notice Same fully on-chain metadata/artwork pattern as ShareAuction
+    /// — no external server, so a real minted share never shows up as a
+    /// blank or broken image in a wallet or marketplace, regardless of
+    /// whether any off-chain host is still running. Company name, which
+    /// share number this specific token is, and the company's total share
+    /// count are all read live from this contract's own storage.
+    function tokenURI(uint256 tokenId) public view override returns (string memory) {
+        require(_ownerOf(tokenId) != address(0), "RoundAuction: nonexistent token");
+        uint256 companyId = shareCompany[tokenId];
+        Company storage c = companies[companyId];
+        uint256 ord = shareOrdinal[tokenId];
+
+        string memory svg = string(abi.encodePacked(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400">',
+            '<rect width="400" height="400" fill="#141B18"/>',
+            '<circle cx="200" cy="180" r="130" fill="none" stroke="#C98A3E" stroke-width="8"/>',
+            '<text x="200" y="140" font-family="serif" font-weight="bold" font-size="22" fill="#EDE6D6" text-anchor="middle">', c.name, '</text>',
+            '<text x="200" y="190" font-family="monospace" font-size="18" fill="#C98A3E" text-anchor="middle">SHARE ', Strings.toString(ord), ' OF ', Strings.toString(c.totalShares), '</text>',
+            '<text x="200" y="360" font-family="monospace" font-size="10" fill="#EDE6D6" opacity="0.5" text-anchor="middle">FICTIONAL SIMULATION - NOT A REAL FINANCIAL PRODUCT</text>',
+            '</svg>'
+        ));
+
+        string memory json = string(abi.encodePacked(
+            '{"name":"', c.name, ' - Share ', Strings.toString(ord), '/', Strings.toString(c.totalShares), '",',
+            '"description":"Sovereign Share NFT from a fictional privatization simulation (Round Auction). Not a real financial product, security, or claim on any real-world asset.",',
+            '"image":"data:image/svg+xml;base64,', Base64.encode(bytes(svg)), '"}'
+        ));
+
+        return string(abi.encodePacked('data:application/json;base64,', Base64.encode(bytes(json))));
     }
 }

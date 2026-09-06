@@ -63,11 +63,13 @@ function CompanyAuctionCard({ company, wallet, onChanged }) {
     }
     setBusy(true);
     try {
-      // A real allowance check first — placeBid() does transferFrom()
-      // under the hood, which reverts without a sufficient approve().
+      // Same optimization as the RoundAuction flow: approve a large
+      // one-time ceiling instead of the exact bid amount, so this is the
+      // last approval transaction needed rather than one per bid, forever.
       const allowance = await getInvestAllowance(wallet.address, wallet.provider);
       if (allowance < amountRaw) {
-        await approveInvest(wallet.signer, amountRaw);
+        const { MaxUint256 } = await import("ethers");
+        await approveInvest(wallet.signer, MaxUint256);
       }
       await placeBidReal(wallet.signer, company.id, amountRaw);
       setBidAmount("");

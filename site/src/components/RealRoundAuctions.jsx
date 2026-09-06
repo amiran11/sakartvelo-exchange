@@ -62,7 +62,22 @@ function RoundCompanyCard({ company, wallet, onChanged }) {
     try {
       const allowance = await getRoundInvestAllowance(wallet.address, wallet.provider);
       if (allowance < amountRaw) {
-        await approveInvestForRound(wallet.signer, amountRaw);
+        // Approving the exact bid amount every time meant every single bid
+        // cost two transactions (approve + bid) instead of one — the
+        // approval consumed by one bid left nothing for the next, so the
+        // very next bid needed a fresh approval all over again, forever.
+        // Approving a large one-time ceiling instead (the standard pattern
+        // most DeFi apps use, including Uniswap) means this is the LAST
+        // approval transaction ever needed — every bid after this one, on
+        // any company, skips straight to the bid itself. Real tradeoff,
+        // stated plainly: this does mean RoundAuction could technically
+        // move up to this ceiling of the wallet's INVEST in one shot if it
+        // were ever compromised, rather than being capped to one bid's
+        // worth at a time. Given INVEST has no value outside this closed
+        // system and the contract is verified/open-source, that's judged
+        // an acceptable tradeoff for cutting real recurring gas cost.
+        const { MaxUint256 } = await import("ethers");
+        await approveInvestForRound(wallet.signer, MaxUint256);
       }
       await placeRoundBid(wallet.signer, company.id, amountRaw);
       setBidAmount("");
