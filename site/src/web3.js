@@ -37,13 +37,16 @@ export const NETWORKS = {
     // InvestToken v3's constructor (this round's redeploy, adding the
     // roundAuctionForTradability hook) was mined at block 500921215 —
     // read directly off the deploy receipt, the earliest relevant block
-    // for this contract set.
-    deploymentBlock: 500921215,
+    // InvestToken and OpenVerifier unchanged this round (no code changes);
+    // RoundAuction v7 carries the full governance/treasury port, and
+    // CompanyTreasury v5 is repointed at RoundAuction accordingly. Lowest
+    // relevant block is RoundAuction v7's deploy.
+    deploymentBlock: 502555912,
     addresses: {
       InvestToken: "0x38E02e24Fddc1F34a8F5BDFD1cc308407627c766",
       ShareAuction: "0x475A8c0dC244cBEb4AB648b552c07ca7834b8BF9",
-      CompanyTreasury: "0xbf41381a33D637AaB61AfDCfe269b463E2A13cff",
-      RoundAuction: "0x3afaa8deB47362EcB07276B28610e03c506F9771",
+      CompanyTreasury: "0x5ddBF2BBcaa53abAb0bA36a39bea5c1fED310363",
+      RoundAuction: "0x2C88D1Ae65d5F539699dc76e61ddDDa13EC10e53",
       OpenVerifier: "0x4Be82ae3f86Bdf35725f686b33b8FfB9a8aE6512",
     },
   },
