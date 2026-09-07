@@ -5,18 +5,30 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./InvestToken.sol";
-import "./ShareAuction.sol";
+import "./RoundAuction.sol";
 
 /// @title CompanyTreasury
 /// @notice Everything a company's governor can do that doesn't require
-/// touching a Share NFT directly lives here instead of in ShareAuction —
-/// split into its own contract purely because ShareAuction's deployed
-/// bytecode exceeded Ethereum's 24,576-byte limit (EIP-170) once this much
-/// functionality was added. This contract reads company/governor/share
-/// state from ShareAuction directly (it's a real import, not just an
-/// interface) and calls back into ShareAuction.adjustCapital() — a
-/// function restricted to only this contract's address — whenever a
-/// company's INVEST capital needs to move.
+/// touching a Share NFT directly lives here instead of in RoundAuction --
+/// split into its own contract purely because the issuance/governance
+/// contract's deployed bytecode exceeded Ethereum's 24,576-byte limit
+/// (EIP-170) once this much functionality was added. This contract reads
+/// company/governor/share state from RoundAuction directly (it's a real
+/// import, not just an interface) and calls back into
+/// RoundAuction.adjustCapital() -- a function restricted to only this
+/// contract's address -- whenever a company's INVEST capital needs to
+/// move.
+///
+/// @dev Originally pointed at ShareAuction. Repointed to RoundAuction
+/// since that is the contract actually used for real listings -- a
+/// ShareAuction-pointed CompanyTreasury had no companies to manage at all,
+/// since ShareAuction currently has zero real listings. RoundAuction's
+/// Company struct has 9 fields (vs ShareAuction's 7 -- it carries extra
+/// per-round state like currentRound/roundDuration that a one-shot auction
+/// doesn't need), so every tuple destructuring of companies() below was
+/// re-checked and adjusted field-by-field, not just search-replaced --
+/// `capital` in particular moved from the 7th/last position to the
+/// 9th/last position.
 ///
 /// FICTIONAL SIMULATION. Not a real financial product, security, or claim
 /// on any real-world asset. Any resemblance to real entities is a
@@ -27,29 +39,29 @@ contract CompanyTreasury is Ownable {
     string public constant DISCLAIMER = "FICTIONAL SIMULATION. Not a real financial product, security, or claim on any real-world asset. Any resemblance to real entities is a gamified rule-set only.";
 
     InvestToken public immutable investToken;
-    ShareAuction public immutable shareAuction;
+    RoundAuction public immutable roundAuction;
 
-    constructor(address _investToken, address _shareAuction) Ownable(msg.sender) {
+    constructor(address _investToken, address _roundAuction) Ownable(msg.sender) {
         investToken = InvestToken(_investToken);
-        shareAuction = ShareAuction(_shareAuction);
+        roundAuction = RoundAuction(_roundAuction);
     }
 
-    /// @dev Mirrors ShareAuction's onlyGovernor: checks the term's
+    /// @dev Mirrors RoundAuction's onlyGovernor: checks the term's
     /// registered OPERATING KEY (not the elected officeholder's personal
     /// wallet) and that the term hasn't expired.
     modifier onlyGovernor(uint256 companyId) {
-        require(msg.sender == shareAuction.governorOperatingKey(companyId), "CompanyTreasury: not the current operating key");
-        require(block.timestamp < shareAuction.governorTermEnd(companyId), "CompanyTreasury: term expired");
+        require(msg.sender == roundAuction.governorOperatingKey(companyId), "CompanyTreasury: not the current operating key");
+        require(block.timestamp < roundAuction.governorTermEnd(companyId), "CompanyTreasury: term expired");
         _;
     }
 
     function _companyShares(uint256 companyId, address holder) internal view returns (uint256) {
-        return shareAuction.companyShareCount(companyId, holder);
+        return roundAuction.companyShareCount(companyId, holder);
     }
 
     // ---------------------------------------------------------------------
     // Dividend during a governor's own term (distinct from the mandatory
-    // end-of-term vote below — this is the sitting governor's own choice).
+    // end-of-term vote below -- this is the sitting governor's own choice).
     // ---------------------------------------------------------------------
 
     event DividendDistributed(uint256 indexed companyId, uint256 totalAmount);
@@ -57,12 +69,15 @@ contract CompanyTreasury is Ownable {
     /// @notice Governor-only: pays INVEST capital out to the supplied
     /// holder list, pro-rata to shares held. The caller supplies the list
     /// because Solidity can't enumerate "everyone who holds a share" on
-    /// its own — see ShareAuction's companyShareCount for the source data.
+    /// its own -- see RoundAuction's companyShareCount for the source data.
     function distribute(uint256 companyId, address[] calldata holders, uint256 amount) external onlyGovernor(companyId) {
-        (, , uint256 sharesIssued, , , , uint256 capital) = shareAuction.companies(companyId);
+        // RoundAuction.companies() returns a 9-tuple:
+        // (name, totalShares, sharesIssued, currentRound, roundEnd,
+        //  roundDuration, finalized, firstMintedAt, capital)
+        (, , uint256 sharesIssued, , , , , , uint256 capital) = roundAuction.companies(companyId);
         require(capital >= amount, "CompanyTreasury: insufficient capital");
         require(sharesIssued > 0, "CompanyTreasury: no shares issued");
-        shareAuction.adjustCapital(companyId, -int256(amount));
+        roundAuction.adjustCapital(companyId, -int256(amount));
         for (uint256 i = 0; i < holders.length; i++) {
             uint256 held = _companyShares(companyId, holders[i]);
             if (held == 0) continue;
@@ -82,7 +97,7 @@ contract CompanyTreasury is Ownable {
     event TokenWithdrawn(uint256 indexed companyId, address indexed token, address indexed to, uint256 amount);
 
     function depositToken(uint256 companyId, address token, uint256 amount) external {
-        (string memory name, , , , , , ) = shareAuction.companies(companyId);
+        (string memory name, , , , , , , , ) = roundAuction.companies(companyId);
         require(bytes(name).length > 0, "CompanyTreasury: unknown company");
         require(amount > 0, "CompanyTreasury: amount must be > 0");
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
@@ -92,7 +107,7 @@ contract CompanyTreasury is Ownable {
 
     /// @notice The governor's UNILATERAL reach into any single ERC-20 a
     /// company holds is capped at 5% of that asset's balance at the start
-    /// of their term — snapshotted the first time that asset is touched
+    /// of their term -- snapshotted the first time that asset is touched
     /// this term, not recomputed live (a live cap is gameable by
     /// deposit-drain-deposit cycling). Anything beyond 5% cannot move via
     /// withdrawToken() at all; it has to go through openTreasuryAuction()
@@ -104,7 +119,7 @@ contract CompanyTreasury is Ownable {
     mapping(uint256 => mapping(uint256 => mapping(address => uint256))) public termTokenFreeSpent;
 
     function _spendFreeAllowance(uint256 companyId, address token, uint256 amount) internal returns (bool ok) {
-        uint256 term = shareAuction.termNumber(companyId);
+        uint256 term = roundAuction.termNumber(companyId);
         if (!termTokenSnapshotTaken[companyId][term][token]) {
             termTokenSnapshot[companyId][term][token] = companyTokenBalance[companyId][token];
             termTokenSnapshotTaken[companyId][term][token] = true;
@@ -118,7 +133,7 @@ contract CompanyTreasury is Ownable {
 
     /// @notice Governor-only, and ONLY within the 5% free tier for this
     /// asset this term. This is deliberately the one function that can
-    /// send company funds to an address the governor alone picked — which
+    /// send company funds to an address the governor alone picked -- which
     /// is why it's capped instead of open-ended the way the original
     /// version of this function was.
     function withdrawToken(uint256 companyId, address token, address to, uint256 amount) external onlyGovernor(companyId) {
@@ -132,7 +147,7 @@ contract CompanyTreasury is Ownable {
     // ---------------------------------------------------------------------
     // Path 1 above 5%: sell at market via commit-reveal. The governor
     // never learns who's bidding what until after bidding closes, and
-    // settlement is fully permissionless — no governor signature is
+    // settlement is fully permissionless -- no governor signature is
     // involved anywhere in settlement, which is the actual fix for
     // "governor picks who wins."
     // ---------------------------------------------------------------------
@@ -205,7 +220,7 @@ contract CompanyTreasury is Ownable {
         emit BidRevealed(auctionId, msg.sender, amount);
     }
 
-    /// @notice Fully permissionless — anyone can trigger settlement, no
+    /// @notice Fully permissionless -- anyone can trigger settlement, no
     /// governor signature involved. Highest revealed bid wins;
     /// non-revealers forfeit their deposit to the company; losing revealed
     /// bidders get a full refund; if nobody reveals validly, the asset
@@ -231,7 +246,7 @@ contract CompanyTreasury is Ownable {
             address bidder = bidders[i];
             SealedBid storage b = treasuryBids[auctionId][bidder];
             if (!b.revealed) {
-                shareAuction.adjustCapital(a.companyId, int256(b.deposit)); // forfeited
+                roundAuction.adjustCapital(a.companyId, int256(b.deposit)); // forfeited
             } else if (bidder == winner) {
                 investToken.transfer(bidder, b.deposit); // deposit returned; bid amount is the payment
             } else {
@@ -240,7 +255,7 @@ contract CompanyTreasury is Ownable {
         }
 
         if (winner != address(0)) {
-            shareAuction.adjustCapital(a.companyId, int256(winningAmount));
+            roundAuction.adjustCapital(a.companyId, int256(winningAmount));
             IERC20(a.token).safeTransfer(winner, a.amount);
         } else {
             companyTokenBalance[a.companyId][a.token] += a.amount; // unsold, return the reservation
@@ -250,7 +265,7 @@ contract CompanyTreasury is Ownable {
 
     // ---------------------------------------------------------------------
     // Path 2 above 5%: a fixed payment to a named party, requiring 51%
-    // shareholder approval instead of a market mechanism — for real-world
+    // shareholder approval instead of a market mechanism -- for real-world
     // invoices an auction can't express.
     // ---------------------------------------------------------------------
 
@@ -321,7 +336,7 @@ contract CompanyTreasury is Ownable {
 
     // ---------------------------------------------------------------------
     // Mandatory end-of-term policy vote: 1% dividend, or reinvest.
-    // Separate from — and in addition to — anything the sitting governor
+    // Separate from -- and in addition to -- anything the sitting governor
     // chose to do with distribute() during their own term.
     // ---------------------------------------------------------------------
 
@@ -337,22 +352,22 @@ contract CompanyTreasury is Ownable {
     event PolicyVoted(uint256 indexed companyId, uint256 indexed term, address indexed voter, bool wantsDividend, uint256 weight);
     event PolicyResolved(uint256 indexed companyId, uint256 indexed term, bool distributedDividend, uint256 amount);
 
-    /// @notice Works whether or not ShareAuction.startNewTerm() has already
-    /// reset the live governorTermEnd for a newer term — ShareAuction
+    /// @notice Works whether or not RoundAuction.startNewTerm() has already
+    /// reset the live governorTermEnd for a newer term -- RoundAuction
     /// archives each outgoing term's end time in termEndedAt automatically
     /// the moment the next governor is installed.
     function openPolicyVote(uint256 companyId, uint256 term) external {
-        uint256 currentTerm = shareAuction.termNumber(companyId);
+        uint256 currentTerm = roundAuction.termNumber(companyId);
         require(term > 0 && term <= currentTerm, "CompanyTreasury: invalid term");
-        uint256 endedAt = shareAuction.termEndedAt(companyId, term);
+        uint256 endedAt = roundAuction.termEndedAt(companyId, term);
         if (endedAt == 0 && term == currentTerm) {
-            uint256 liveEnd = shareAuction.governorTermEnd(companyId);
+            uint256 liveEnd = roundAuction.governorTermEnd(companyId);
             require(block.timestamp >= liveEnd, "CompanyTreasury: term not over yet");
             endedAt = liveEnd;
         }
         require(endedAt != 0, "CompanyTreasury: term not concluded");
         require(policyVoteEnd[companyId][term] == 0, "CompanyTreasury: already opened");
-        (, , uint256 sharesIssued, , , , ) = shareAuction.companies(companyId);
+        (, , uint256 sharesIssued, , , , , , ) = roundAuction.companies(companyId);
         require(sharesIssued > 0, "CompanyTreasury: no shares issued");
         policyVoteEnd[companyId][term] = block.timestamp + POLICY_VOTE_WINDOW;
         emit PolicyVoteOpened(companyId, term, policyVoteEnd[companyId][term]);
@@ -379,10 +394,10 @@ contract CompanyTreasury is Ownable {
         policyResolved[companyId][term] = true;
 
         if (policyDividendWeight[companyId][term] > policyReinvestWeight[companyId][term]) {
-            (, , uint256 sharesIssued, , , , uint256 capital) = shareAuction.companies(companyId);
+            (, , uint256 sharesIssued, , , , , , uint256 capital) = roundAuction.companies(companyId);
             uint256 amount = (capital * TERM_END_DIVIDEND_BPS) / 10_000;
             if (amount > 0 && sharesIssued > 0) {
-                shareAuction.adjustCapital(companyId, -int256(amount));
+                roundAuction.adjustCapital(companyId, -int256(amount));
                 for (uint256 i = 0; i < holders.length; i++) {
                     uint256 held = _companyShares(companyId, holders[i]);
                     if (held == 0) continue;
@@ -397,7 +412,7 @@ contract CompanyTreasury is Ownable {
     }
 
     // ---------------------------------------------------------------------
-    // INVEST secondary market — the on-ramp for anyone who wasn't an
+    // INVEST secondary market -- the on-ramp for anyone who wasn't an
     // original citizen. See InvestToken.sol / README for the full picture.
     // ---------------------------------------------------------------------
 
@@ -443,10 +458,10 @@ contract CompanyTreasury is Ownable {
     function governorOfferInvest(uint256 companyId, uint256 investAmount, address paymentToken, uint256 paymentAmount) external onlyGovernor(companyId) {
         require(approvedPaymentTokens[paymentToken], "CompanyTreasury: payment token not approved");
         require(investAmount > 0 && paymentAmount > 0, "CompanyTreasury: amounts must be > 0");
-        (, , , , , , uint256 capital) = shareAuction.companies(companyId);
+        (, , , , , , , , uint256 capital) = roundAuction.companies(companyId);
         require(capital >= investAmount, "CompanyTreasury: insufficient capital");
-        shareAuction.adjustCapital(companyId, -int256(investAmount));
-        address corp = shareAuction.corporateHolder(companyId);
+        roundAuction.adjustCapital(companyId, -int256(investAmount));
+        address corp = roundAuction.corporateHolder(companyId);
         investOffers[nextInvestOfferId] = InvestOffer(corp, investAmount, paymentToken, paymentAmount, true, true, companyId);
         emit InvestOffered(nextInvestOfferId, corp, investAmount, paymentToken, paymentAmount);
         nextInvestOfferId++;
@@ -471,8 +486,8 @@ contract CompanyTreasury is Ownable {
         require(o.active, "CompanyTreasury: not active");
         o.active = false;
         if (o.isCorporateOffer) {
-            require(msg.sender == shareAuction.governorOperatingKey(o.creditCompanyId), "CompanyTreasury: not the current operating key");
-            shareAuction.adjustCapital(o.creditCompanyId, int256(o.investAmount));
+            require(msg.sender == roundAuction.governorOperatingKey(o.creditCompanyId), "CompanyTreasury: not the current operating key");
+            roundAuction.adjustCapital(o.creditCompanyId, int256(o.investAmount));
         } else {
             require(msg.sender == o.seller, "CompanyTreasury: not seller");
             investToken.transfer(o.seller, o.investAmount);
