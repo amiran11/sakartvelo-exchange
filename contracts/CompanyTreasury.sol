@@ -361,6 +361,7 @@ contract CompanyTreasury is Ownable {
     event PolicyVoteOpened(uint256 indexed companyId, uint256 indexed term, uint256 voteEnd);
     event PolicyVoted(uint256 indexed companyId, uint256 indexed term, address indexed voter, bool wantsDividend, uint256 weight);
     event PolicyResolved(uint256 indexed companyId, uint256 indexed term, bool distributedDividend, uint256 amount);
+    event DividendClaimed(uint256 indexed companyId, uint256 indexed term, address indexed holder, uint256 amount);
 
     /// @notice Works whether or not RoundAuction.startNewTerm() has already
     /// reset the live governorTermEnd for a newer term -- RoundAuction
@@ -397,7 +398,38 @@ contract CompanyTreasury is Ownable {
         emit PolicyVoted(companyId, term, msg.sender, wantsDividend, weight);
     }
 
-    function resolvePolicyVote(uint256 companyId, uint256 term, address[] calldata holders) external {
+    /// @notice companyId/term => per-share dividend amount, scaled by 1e18
+    /// for integer-division precision. Set once, in resolvePolicyVote().
+    mapping(uint256 => mapping(uint256 => uint256)) public dividendPerShare;
+    mapping(uint256 => mapping(uint256 => mapping(address => bool))) public claimedDividend;
+
+    /// @notice Found during a self-audit pass, replacing an earlier version
+    /// that took a caller-supplied `holders` array and paid each address
+    /// directly in a loop here. That pattern had a real, permanent
+    /// fund-loss bug: `policyResolved` locked to true immediately, so if
+    /// the supplied list was ever incomplete -- by accident or malice --
+    /// the excluded shareholders' portion of the dividend wasn't merely
+    /// delayed, it was gone, since the same 1% was already deducted from
+    /// company capital regardless of who actually got paid.
+    ///
+    /// This version does no per-holder work at all: it only decides
+    /// whether the dividend won, computes a per-share rate, and reserves
+    /// the total amount by deducting it from capital. Every shareholder
+    /// then calls claimDividend() themselves for their own cut, whenever
+    /// they want -- removing both the incomplete-list risk and the
+    /// unbounded-loop gas risk in the same change, since there's no loop
+    /// over holders left in this function at all.
+    ///
+    /// Known, stated tradeoff of the fix: this does not snapshot who held
+    /// shares at the exact moment of resolution. claimDividend() reads
+    /// CURRENT share count at claim time, so a shareholder who transfers
+    /// their shares away before claiming forfeits that term's dividend to
+    /// whichever wallet holds the shares when it's claimed -- the same
+    /// "record date" tradeoff ordinary dividend systems make explicitly,
+    /// here made implicitly by using current ownership. A full historical
+    /// snapshot system would close this too, but is a larger change than
+    /// this pass covers.
+    function resolvePolicyVote(uint256 companyId, uint256 term) external {
         require(policyVoteEnd[companyId][term] != 0, "CompanyTreasury: not opened");
         require(block.timestamp >= policyVoteEnd[companyId][term], "CompanyTreasury: voting still open");
         require(!policyResolved[companyId][term], "CompanyTreasury: already resolved");
@@ -408,17 +440,32 @@ contract CompanyTreasury is Ownable {
             uint256 amount = (capital * TERM_END_DIVIDEND_BPS) / 10_000;
             if (amount > 0 && sharesIssued > 0) {
                 roundAuction.adjustCapital(companyId, -int256(amount));
-                for (uint256 i = 0; i < holders.length; i++) {
-                    uint256 held = _companyShares(companyId, holders[i]);
-                    if (held == 0) continue;
-                    uint256 cut = (amount * held) / sharesIssued;
-                    if (cut > 0) investToken.transfer(holders[i], cut);
-                }
+                dividendPerShare[companyId][term] = (amount * 1e18) / sharesIssued;
                 emit PolicyResolved(companyId, term, true, amount);
                 return;
             }
         }
         emit PolicyResolved(companyId, term, false, 0);
+    }
+
+    /// @notice Any shareholder claims their own cut of a resolved
+    /// dividend, based on their CURRENT share count -- see the tradeoff
+    /// noted on resolvePolicyVote() above. Small rounding dust from the
+    /// integer division may remain unclaimed in aggregate; this is a
+    /// negligible, bounded amount, not a fund-loss risk like the pattern
+    /// this replaced.
+    function claimDividend(uint256 companyId, uint256 term) external {
+        require(policyResolved[companyId][term], "CompanyTreasury: not resolved");
+        require(!claimedDividend[companyId][term][msg.sender], "CompanyTreasury: already claimed");
+        uint256 rate = dividendPerShare[companyId][term];
+        require(rate > 0, "CompanyTreasury: no dividend this term");
+        uint256 held = _companyShares(companyId, msg.sender);
+        require(held > 0, "CompanyTreasury: not a shareholder");
+        uint256 amount = (held * rate) / 1e18;
+        require(amount > 0, "CompanyTreasury: nothing to claim");
+        claimedDividend[companyId][term][msg.sender] = true;
+        investToken.transfer(msg.sender, amount);
+        emit DividendClaimed(companyId, term, msg.sender, amount);
     }
 
     // ---------------------------------------------------------------------
