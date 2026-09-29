@@ -16,7 +16,7 @@ that introduced the fix, and the contracts themselves are independently
 verified on [Arbiscan](https://arbiscan.io), Sourcify, and Blockscout, so
 anyone can confirm the deployed bytecode matches this source.
 
-Last updated: September 2026, alongside the capital-custody and reinvestment-architecture fixes (Findings 5–8), pending the next redeploy.
+Last updated: September 2026, alongside the capital-custody and reinvestment-architecture fixes (Findings 5–8), pending the redeploy documented in REDEPLOY_GOVERNANCE_LAYER.md.
 
 ---
 
@@ -163,7 +163,7 @@ pattern this replaced.
 
 **Fix:** `adjustCapital()` now enforces a real invariant: RoundAuction always physically holds INVEST tokens equal to the sum of every company's `capital` field. A negative delta (capital being spent) now pays the real tokens out to the treasury at the same moment the ledger updates. A positive delta (capital being credited, e.g. treasury-auction proceeds) requires the treasury to transfer the matching real tokens to RoundAuction earlier in the same transaction — every call site in `CompanyTreasury` that credits capital was updated to do this forwarding explicitly (`settleTreasuryAuction()`, `cancelInvestOffer()`).
 
-**Commit:** [`<pending>`]
+**Commit:** [`4756f41`](https://github.com/amiran11/sakartvelo-exchange/commit/4756f41)
 
 ---
 
@@ -175,7 +175,7 @@ pattern this replaced.
 
 **Fix:** Added a separate `reinvestableIncome` pool per company, entirely distinct from `capital`. `invest()` now draws exclusively from this pool. It is credited only when a company actually receives real income — currently, only via the new `claimDividendAsCorporation()` (Finding 7) — never from the original privatization capital.
 
-**Commit:** [`<pending>`]
+**Commit:** [`4756f41`](https://github.com/amiran11/sakartvelo-exchange/commit/4756f41)
 
 ---
 
@@ -187,7 +187,7 @@ pattern this replaced.
 
 **Fix:** Added `claimDividendAsCorporation(fromCompanyId, dividendCompanyId, term)`, restricted to the origin company's governor, mirroring `voteAsCorporation()`'s pattern. Proceeds are credited directly into the origin company's `reinvestableIncome` pool (Finding 6) — never sent to any individual wallet.
 
-**Commit:** [`<pending>`]
+**Commit:** [`4756f41`](https://github.com/amiran11/sakartvelo-exchange/commit/4756f41)
 
 ---
 
@@ -197,7 +197,7 @@ pattern this replaced.
 
 **Implementation:** Carved out inside `settleRound()`'s existing minting logic (now centralized in a new internal `_mintShares()` helper, used by both the main proportional pass and the stall-breaker fallback, so the rule can't silently apply in one path and not the other). The 1% is rounded down and applies only when the winning bid came from a recognized corporate holder address — ordinary citizen bids are completely unaffected.
 
-**Commit:** [`<pending>`]
+**Commit:** [`4756f41`](https://github.com/amiran11/sakartvelo-exchange/commit/4756f41)
 
 ---
 
