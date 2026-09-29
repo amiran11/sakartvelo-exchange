@@ -153,6 +153,15 @@ contract CompanyTreasury is Ownable {
     // ---------------------------------------------------------------------
 
     uint256 public bidDepositAmount = 10 * 10 ** 18;
+    /// @notice Same class of protection as MAX_BIDS on RoundAuction/ShareAuction
+    /// -- found missing here during a self-audit pass. Without this,
+    /// settleTreasuryAuction()'s two loops over every committed bidder
+    /// could grow expensive enough to exceed a block's gas limit,
+    /// permanently blocking settlement -- which would lock both the asset
+    /// being auctioned AND every bidder's escrowed deposit/revealed
+    /// amount, with no recovery path, exactly the failure mode the
+    /// original MAX_BIDS fix was written to prevent elsewhere.
+    uint256 public constant MAX_BIDDERS = 500;
     uint256 public constant COMMIT_WINDOW = 2 days;
     uint256 public constant REVEAL_WINDOW = 1 days;
 
@@ -196,6 +205,7 @@ contract CompanyTreasury is Ownable {
     function commitBid(uint256 auctionId, bytes32 commitHash) external {
         TreasuryAuction storage a = treasuryAuctions[auctionId];
         require(block.timestamp < a.commitEnd, "CompanyTreasury: commit window closed");
+        require(treasuryBidders[auctionId].length < MAX_BIDDERS, "CompanyTreasury: bidder cap reached for this auction");
         require(treasuryBids[auctionId][msg.sender].commitHash == bytes32(0), "CompanyTreasury: already committed");
         investToken.transferFrom(msg.sender, address(this), bidDepositAmount);
         treasuryBids[auctionId][msg.sender] = SealedBid(commitHash, bidDepositAmount, false, 0);
