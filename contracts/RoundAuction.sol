@@ -107,6 +107,36 @@ contract RoundAuction is ERC721, Ownable {
     mapping(uint256 => uint256) public shareOrdinal; // tokenId => which share # of its company
     mapping(uint256 => mapping(address => uint256)) public companyShareCount; // companyId => holder => shares currently held
 
+    /// @notice A separate pool from `capital`, found necessary during a
+    /// self-audit pass: governors were able to call invest() using a
+    /// company's ORIGINAL citizen-funded capital, with no restriction to
+    /// only income actually earned since privatization. This tracks real
+    /// income only -- credited via addReinvestableIncome() (called when a
+    /// corporate holding claims a dividend from another company, see
+    /// CompanyTreasury.claimDividendAsCorporation()) -- and invest() now
+    /// draws exclusively from this pool, never from `capital` directly.
+    mapping(uint256 => uint256) public reinvestableIncome;
+
+    /// @notice Reverse lookup from a corporate holder's synthetic address
+    /// back to which companyId it represents, populated once at
+    /// listCompany() time. Stored as companyId + 1 so that 0 unambiguously
+    /// means "not a corporate holder" -- company ID 0 is itself a valid
+    /// real company, so a bare 0 default would otherwise be indistinguishable
+    /// from "this is company 0's corporate holder."
+    mapping(address => uint256) public corporateHolderToCompanyPlusOne;
+
+    /// @notice Per-token lock for governor in-kind compensation shares (see
+    /// settleRound()'s compensation-carving logic below) -- separate from,
+    /// and in addition to, the existing time-based LOCK_PERIOD every share
+    /// already has. compensationOriginCompany[tokenId] identifies which
+    /// company's own term counter governs the lock; compensationUnlockTerm
+    /// is the term number that company must reach before this specific
+    /// token becomes transferable. A tokenId absent from both mappings
+    /// (the default, 0) is not a compensation share and is unaffected --
+    /// its transferability is governed only by the ordinary time lock.
+    mapping(uint256 => uint256) public compensationOriginCompany;
+    mapping(uint256 => uint256) public compensationUnlockTerm;
+
     /// @notice Mirrors ShareAuction's companiesListed/companiesFinalized --
     /// kept here for consistency even though InvestToken's
     /// privatizationConcluded() check currently points at ShareAuction,
@@ -170,8 +200,27 @@ contract RoundAuction is ERC721, Ownable {
 
     /// @notice The only way a company's INVEST capital changes from outside
     /// this contract -- restricted to the registered CompanyTreasury address.
-    /// A positive delta credits capital (auction/vendor-payment proceeds); a
-    /// negative one debits it (dividends, buying INVEST market offers).
+    /// Found during a self-audit pass: the earlier version of this function
+    /// only updated the internal `capital` number, never moving any real
+    /// tokens -- while CompanyTreasury's payout functions (dividends, the
+    /// INVEST market) assumed they already held the underlying INVEST to
+    /// pay out. They didn't; the real tokens never left this contract. Any
+    /// actual dividend or market payout attempt would have simply reverted
+    /// with an insufficient-balance error.
+    ///
+    /// This version keeps a stronger invariant instead: this contract
+    /// always physically holds real INVEST tokens equal to the sum of
+    /// every company's `capital` field. A negative delta (capital being
+    /// spent) pays those real tokens OUT to the treasury -- msg.sender,
+    /// always the treasury contract per onlyTreasury -- at the exact same
+    /// moment the ledger updates, so the treasury always actually has what
+    /// it's about to pay out. A positive delta (new capital arriving, e.g.
+    /// treasury-auction proceeds) requires the treasury to have already
+    /// transferred the matching real tokens to this contract earlier in
+    /// the SAME transaction, before calling this -- not separately
+    /// verified here, since an insufficient prior transfer would already
+    /// have reverted the whole transaction via the ERC-20 transfer itself,
+    /// making a second check redundant.
     function adjustCapital(uint256 companyId, int256 delta) external onlyTreasury {
         if (delta >= 0) {
             companies[companyId].capital += uint256(delta);
@@ -179,7 +228,19 @@ contract RoundAuction is ERC721, Ownable {
             uint256 dec = uint256(-delta);
             require(companies[companyId].capital >= dec, "RoundAuction: capital underflow");
             companies[companyId].capital -= dec;
+            investToken.transfer(msg.sender, dec);
         }
+    }
+
+    /// @notice Called only by CompanyTreasury, only when a corporate
+    /// holding successfully claims a dividend from another company (see
+    /// CompanyTreasury.claimDividendAsCorporation()). Credits real,
+    /// already-transferred income into the ORIGIN company's reinvestable
+    /// pool -- never the original capital pool -- so invest() can later
+    /// spend it. Same "treasury sends the real tokens first, then calls
+    /// this" pattern as adjustCapital's positive branch.
+    function addReinvestableIncome(uint256 companyId, uint256 amount) external onlyTreasury {
+        reinvestableIncome[companyId] += amount;
     }
 
     function listCompany(uint256 companyId, string calldata name, uint256 totalShares, uint256 roundDuration) external onlyOwner {
@@ -198,6 +259,7 @@ contract RoundAuction is ERC721, Ownable {
             capital: 0
         });
         companiesListed++;
+        corporateHolderToCompanyPlusOne[corporateHolder(companyId)] = companyId + 1;
         emit CompanyListed(companyId, name, totalShares, companies[companyId].roundEnd);
     }
 
@@ -253,6 +315,61 @@ contract RoundAuction is ERC721, Ownable {
         investToken.transferFrom(msg.sender, address(this), amount);
         bids[companyId].push(RoundBid(msg.sender, amount, true));
         emit BidPlaced(companyId, msg.sender, amount, bids[companyId].length - 1);
+    }
+
+    /// @notice Mints `qty` shares of `companyId` to `to`, splitting off 1%
+    /// (rounded down) to the ORIGIN company's current governor, in-kind,
+    /// locked for 2 of that origin company's terms, whenever `to` is a
+    /// known corporate holder address -- i.e. whenever this win came from
+    /// a governor's invest() decision on another company's behalf, not an
+    /// ordinary citizen bid. Ordinary bids (to == an ordinary wallet) are
+    /// unaffected: corporateHolderToCompanyPlusOne is 0 for any address
+    /// that was never registered as a corporate holder, so the whole
+    /// compensation branch is skipped and every share mints to `to`
+    /// exactly as before.
+    ///
+    /// Centralized here, called from both the main proportional pass and
+    /// the stall-breaker fallback, so the compensation rule can't
+    /// silently apply in one path and not the other.
+    function _mintShares(uint256 companyId, Company storage c, address to, uint256 qty) internal {
+        uint256 originPlusOne = corporateHolderToCompanyPlusOne[to];
+        if (originPlusOne == 0) {
+            for (uint256 s = 0; s < qty; s++) {
+                uint256 tokenId = nextTokenId++;
+                _safeMint(to, tokenId);
+                shareCompany[tokenId] = companyId;
+                c.sharesIssued++;
+                shareOrdinal[tokenId] = c.sharesIssued;
+            }
+            companyShareCount[companyId][to] += qty;
+            return;
+        }
+
+        uint256 originId = originPlusOne - 1;
+        address governor = companyGovernor[originId];
+        uint256 govCut = (governor != address(0)) ? (qty / 100) : 0; // 1%, rounds down; 0 for small qty or no sitting governor -- acceptable, not an error
+        uint256 corpCut = qty - govCut;
+        uint256 unlockTerm = termNumber[originId] + 2;
+
+        for (uint256 s = 0; s < govCut; s++) {
+            uint256 tokenId = nextTokenId++;
+            _safeMint(governor, tokenId);
+            shareCompany[tokenId] = companyId;
+            c.sharesIssued++;
+            shareOrdinal[tokenId] = c.sharesIssued;
+            compensationOriginCompany[tokenId] = originId;
+            compensationUnlockTerm[tokenId] = unlockTerm;
+        }
+        if (govCut > 0) companyShareCount[companyId][governor] += govCut;
+
+        for (uint256 s = 0; s < corpCut; s++) {
+            uint256 tokenId = nextTokenId++;
+            _safeMint(to, tokenId);
+            shareCompany[tokenId] = companyId;
+            c.sharesIssued++;
+            shareOrdinal[tokenId] = c.sharesIssued;
+        }
+        if (corpCut > 0) companyShareCount[companyId][to] += corpCut;
     }
 
     /// @notice Permissionless -- anyone can trigger settlement once a round
@@ -326,14 +443,7 @@ contract RoundAuction is ERC721, Ownable {
 
             if (entitlement <= sharesRemaining) {
                 if (c.firstMintedAt == 0) c.firstMintedAt = block.timestamp;
-                for (uint256 s = 0; s < entitlement; s++) {
-                    uint256 tokenId = nextTokenId++;
-                    _safeMint(bid.bidder, tokenId);
-                    shareCompany[tokenId] = companyId;
-                    c.sharesIssued++;
-                    shareOrdinal[tokenId] = c.sharesIssued;
-                }
-                companyShareCount[companyId][bid.bidder] += entitlement;
+                _mintShares(companyId, c, bid.bidder, entitlement);
                 sharesRemaining -= entitlement;
                 issuedThisRound += entitlement;
 
@@ -377,12 +487,7 @@ contract RoundAuction is ERC721, Ownable {
                 RoundBid storage bid = b[idx[k]];
                 if (!bid.active) continue;
                 if (c.firstMintedAt == 0) c.firstMintedAt = block.timestamp;
-                uint256 tokenId = nextTokenId++;
-                _safeMint(bid.bidder, tokenId);
-                shareCompany[tokenId] = companyId;
-                c.sharesIssued++;
-                shareOrdinal[tokenId] = c.sharesIssued;
-                companyShareCount[companyId][bid.bidder] += 1;
+                _mintShares(companyId, c, bid.bidder, 1);
                 sharesRemaining -= 1;
                 issuedThisRound += 1;
 
@@ -642,20 +747,21 @@ contract RoundAuction is ERC721, Ownable {
         _;
     }
 
-    /// @notice BUY: the governor commits this company's capital as a bid
-    /// into another company's still-open round -- one company taking a
-    /// stake in another, the way a real conglomerate would. The corporate
-    /// bid is pushed in as an ordinary active RoundBid, and participates
-    /// in that target company's next settlement exactly like any other bid.
+    /// @notice BUY: the governor commits this company's REINVESTABLE INCOME
+    /// (never the original citizen-funded capital -- see reinvestableIncome
+    /// above) as a bid into another company's still-open round. The
+    /// corporate bid is pushed in as an ordinary active RoundBid, and
+    /// participates in that target company's next settlement exactly like
+    /// any other bid; if it wins, _mintShares() automatically carves out
+    /// the governor's 1% in-kind compensation at that point.
     function invest(uint256 fromCompanyId, uint256 toCompanyId, uint256 amount) external onlyGovernor(fromCompanyId) {
-        Company storage from = companies[fromCompanyId];
-        require(from.capital >= amount, "RoundAuction: insufficient capital");
+        require(reinvestableIncome[fromCompanyId] >= amount, "RoundAuction: insufficient reinvestable income");
         Company storage to = companies[toCompanyId];
         require(to.totalShares > 0, "RoundAuction: unknown target company");
         require(!to.finalized, "RoundAuction: target sold out");
         require(block.timestamp < to.roundEnd, "RoundAuction: target round closed, awaiting settlement");
         require(bids[toCompanyId].length < MAX_BIDS, "RoundAuction: bid cap reached for target company");
-        from.capital -= amount;
+        reinvestableIncome[fromCompanyId] -= amount;
         address corpBidder = corporateHolder(fromCompanyId);
         bids[toCompanyId].push(RoundBid(corpBidder, amount, true));
         emit CorporateInvestment(fromCompanyId, toCompanyId, amount);
@@ -758,12 +864,25 @@ contract RoundAuction is ERC721, Ownable {
     /// LOCK_PERIOD has passed since this company's first-ever mint. Also
     /// keeps companyShareCount accurate so governance votes always reflect
     /// who currently holds shares, not just who originally won them.
+    ///
+    /// Additionally enforces the separate 2-term governor-compensation
+    /// lock (see compensationOriginCompany/compensationUnlockTerm above)
+    /// for any token minted as in-kind compensation -- checked independent
+    /// of, and in addition to, the ordinary time-based lock. A tokenId
+    /// with no compensation lock set (the default for every ordinary
+    /// share) skips this check entirely, since compensationUnlockTerm
+    /// defaults to 0 and termNumber is always >= 0.
     function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
         address from = _ownerOf(tokenId);
         uint256 companyId = shareCompany[tokenId];
         if (from != address(0) && to != address(0)) {
             Company storage c = companies[companyId];
             require(block.timestamp >= c.firstMintedAt + LOCK_PERIOD, "RoundAuction: shares still locked");
+            uint256 requiredTerm = compensationUnlockTerm[tokenId];
+            if (requiredTerm > 0) {
+                uint256 originId = compensationOriginCompany[tokenId];
+                require(termNumber[originId] >= requiredTerm, "RoundAuction: compensation shares still locked");
+            }
             companyShareCount[companyId][from]--;
             companyShareCount[companyId][to]++;
         }

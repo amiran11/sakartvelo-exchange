@@ -256,6 +256,12 @@ contract CompanyTreasury is Ownable {
             address bidder = bidders[i];
             SealedBid storage b = treasuryBids[auctionId][bidder];
             if (!b.revealed) {
+                // Forfeited deposit: this contract already holds it (from
+                // commitBid's transferFrom), so forward it into
+                // RoundAuction before crediting capital there -- adjustCapital's
+                // positive branch requires the real tokens to have already
+                // arrived in the same transaction.
+                investToken.transfer(address(roundAuction), b.deposit);
                 roundAuction.adjustCapital(a.companyId, int256(b.deposit)); // forfeited
             } else if (bidder == winner) {
                 investToken.transfer(bidder, b.deposit); // deposit returned; bid amount is the payment
@@ -265,6 +271,9 @@ contract CompanyTreasury is Ownable {
         }
 
         if (winner != address(0)) {
+            // Same forwarding requirement: this contract already holds the
+            // winner's revealed bid amount (from revealBid's transferFrom).
+            investToken.transfer(address(roundAuction), winningAmount);
             roundAuction.adjustCapital(a.companyId, int256(winningAmount));
             IERC20(a.token).safeTransfer(winner, a.amount);
         } else {
@@ -468,6 +477,40 @@ contract CompanyTreasury is Ownable {
         emit DividendClaimed(companyId, term, msg.sender, amount);
     }
 
+    /// @notice The corporate-holding equivalent of claimDividend() -- lets
+    /// a company's governor claim a dividend on behalf of shares their
+    /// organization holds in ANOTHER company (built up via
+    /// RoundAuction.invest()). The corporate holder address has no
+    /// private key to call claimDividend() itself, the same problem
+    /// voteAsCorporation() already solves for governance votes. Unlike an
+    /// ordinary claim, proceeds are never sent to any individual wallet --
+    /// they're credited into the ORIGIN company's reinvestable-income pool
+    /// (RoundAuction.reinvestableIncome), which invest() can later spend.
+    /// This is what makes reinvestment self-sustaining: real income earned
+    /// through a corporate holding flows back to the investing company's
+    /// own pool, never to a person, and never touches that company's
+    /// original citizen-funded capital.
+    function claimDividendAsCorporation(uint256 fromCompanyId, uint256 dividendCompanyId, uint256 term) external onlyGovernor(fromCompanyId) {
+        address corp = roundAuction.corporateHolder(fromCompanyId);
+        require(policyResolved[dividendCompanyId][term], "CompanyTreasury: not resolved");
+        require(!claimedDividend[dividendCompanyId][term][corp], "CompanyTreasury: already claimed");
+        uint256 rate = dividendPerShare[dividendCompanyId][term];
+        require(rate > 0, "CompanyTreasury: no dividend this term");
+        uint256 held = roundAuction.companyShareCount(dividendCompanyId, corp);
+        require(held > 0, "CompanyTreasury: no shares held there");
+        uint256 amount = (held * rate) / 1e18;
+        require(amount > 0, "CompanyTreasury: nothing to claim");
+        claimedDividend[dividendCompanyId][term][corp] = true;
+        // This contract already holds the real tokens backing this
+        // dividend pool -- received automatically when resolvePolicyVote()
+        // called adjustCapital with a negative delta. Forward this specific
+        // claim's share into RoundAuction, then credit it to the ORIGIN
+        // company's reinvestable pool, never to a wallet.
+        investToken.transfer(address(roundAuction), amount);
+        roundAuction.addReinvestableIncome(fromCompanyId, amount);
+        emit DividendClaimed(dividendCompanyId, term, corp, amount);
+    }
+
     // ---------------------------------------------------------------------
     // INVEST secondary market -- the on-ramp for anyone who wasn't an
     // original citizen. See InvestToken.sol / README for the full picture.
@@ -544,6 +587,12 @@ contract CompanyTreasury is Ownable {
         o.active = false;
         if (o.isCorporateOffer) {
             require(msg.sender == roundAuction.governorOperatingKey(o.creditCompanyId), "CompanyTreasury: not the current operating key");
+            // This contract already holds these tokens -- they arrived
+            // automatically when governorOfferInvest() called adjustCapital
+            // with a negative delta, which now pays the real tokens to the
+            // caller (this contract) at that same moment. Forward them back
+            // to RoundAuction before crediting capital there.
+            investToken.transfer(address(roundAuction), o.investAmount);
             roundAuction.adjustCapital(o.creditCompanyId, int256(o.investAmount));
         } else {
             require(msg.sender == o.seller, "CompanyTreasury: not seller");

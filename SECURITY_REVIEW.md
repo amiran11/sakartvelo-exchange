@@ -16,7 +16,7 @@ that introduced the fix, and the contracts themselves are independently
 verified on [Arbiscan](https://arbiscan.io), Sourcify, and Blockscout, so
 anyone can confirm the deployed bytecode matches this source.
 
-Last updated: September 2026, alongside `RoundAuction` v7 / `CompanyTreasury` v5.
+Last updated: September 2026, alongside the capital-custody and reinvestment-architecture fixes (Findings 5–8), pending the next redeploy.
 
 ---
 
@@ -152,6 +152,52 @@ aggregate — negligible and bounded, not a fund-loss risk like the
 pattern this replaced.
 
 **Commit:** [`5e41fa5`](https://github.com/amiran11/sakartvelo-exchange/commit/5e41fa5)
+
+---
+
+### Finding 5 — Capital ledger and real token custody were split across two contracts (Critical, fixed)
+
+**Where:** `RoundAuction.adjustCapital()`, and every `CompanyTreasury` function that called it
+
+**Issue:** `adjustCapital()` only ever updated an internal `uint256 capital` number in RoundAuction — it never moved any real INVEST tokens. Meanwhile, `CompanyTreasury`'s payout functions (`distribute()`, `claimDividend()`, the INVEST secondary market) assumed they already held the underlying tokens and simply called `investToken.transfer()` from their own balance. They didn't hold them: the real tokens backing a company's `capital` field sat entirely in RoundAuction, since that's where citizen bids land at `placeBid()` time. Any real attempt to pay a dividend, or complete an INVEST-market sale funded from company capital, would have reverted on an insufficient-balance error — not a theoretical risk, a guaranteed failure the first time either path was actually used.
+
+**Fix:** `adjustCapital()` now enforces a real invariant: RoundAuction always physically holds INVEST tokens equal to the sum of every company's `capital` field. A negative delta (capital being spent) now pays the real tokens out to the treasury at the same moment the ledger updates. A positive delta (capital being credited, e.g. treasury-auction proceeds) requires the treasury to transfer the matching real tokens to RoundAuction earlier in the same transaction — every call site in `CompanyTreasury` that credits capital was updated to do this forwarding explicitly (`settleTreasuryAuction()`, `cancelInvestOffer()`).
+
+**Commit:** [`<pending>`]
+
+---
+
+### Finding 6 — Governor's `invest()` had no restriction to income vs. original capital (Medium, fixed)
+
+**Where:** `RoundAuction.invest()`
+
+**Issue:** A sitting governor could commit up to 100% of a company's capital — including the original citizen-funded privatization proceeds, not just income earned since — into a single cross-company investment, with no additional safeguard beyond simply holding office. This was a materially larger unilateral-authority gap than either the 5%-capped `withdrawToken()` or the vote-gated vendor payments already in place for other spending paths.
+
+**Fix:** Added a separate `reinvestableIncome` pool per company, entirely distinct from `capital`. `invest()` now draws exclusively from this pool. It is credited only when a company actually receives real income — currently, only via the new `claimDividendAsCorporation()` (Finding 7) — never from the original privatization capital.
+
+**Commit:** [`<pending>`]
+
+---
+
+### Finding 7 — Corporate holdings could accumulate shares and vote, but could never claim their own dividends (Medium, fixed)
+
+**Where:** `CompanyTreasury.claimDividend()`
+
+**Issue:** A company's corporate cross-holding (built up via `invest()`) is a synthetic address with no private key — `voteAsCorporation()` already existed to let a governor vote on its behalf, but no equivalent existed for claiming a dividend. `claimDividend()` checks `msg.sender` directly, which a synthetic address can never satisfy. Corporate holdings could hold real voting power in a company they'd invested in, but could never actually realize any income from that position.
+
+**Fix:** Added `claimDividendAsCorporation(fromCompanyId, dividendCompanyId, term)`, restricted to the origin company's governor, mirroring `voteAsCorporation()`'s pattern. Proceeds are credited directly into the origin company's `reinvestableIncome` pool (Finding 6) — never sent to any individual wallet.
+
+**Commit:** [`<pending>`]
+
+---
+
+### Finding 8 — Governor compensation for successful reinvestment (new feature, not a vulnerability fix)
+
+**Decision:** Governors who successfully grow a company's holdings through reinvestment now receive 1% of the shares acquired, in-kind (i.e. in the actual acquired shares, not INVEST currency), locked for 2 terms of the origin company's own governance cycle. This is a deliberate incentive-alignment choice, not a bug fix — included here because it touches the same minting logic as Findings 5–7 and shipped in the same redeploy.
+
+**Implementation:** Carved out inside `settleRound()`'s existing minting logic (now centralized in a new internal `_mintShares()` helper, used by both the main proportional pass and the stall-breaker fallback, so the rule can't silently apply in one path and not the other). The 1% is rounded down and applies only when the winning bid came from a recognized corporate holder address — ordinary citizen bids are completely unaffected.
+
+**Commit:** [`<pending>`]
 
 ---
 
