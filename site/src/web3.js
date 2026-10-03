@@ -39,14 +39,18 @@ export const NETWORKS = {
     // read directly off the deploy receipt, the earliest relevant block
     // InvestToken and OpenVerifier unchanged this round (no code changes);
     // RoundAuction v7 carries the full governance/treasury port, and
-    // CompanyTreasury v5 is repointed at RoundAuction accordingly. Lowest
-    // relevant block is RoundAuction v7's deploy.
-    deploymentBlock: 502555912,
+    // InvestToken, OpenVerifier, ShareAuction unchanged (no code changes).
+    // Both RoundAuction and CompanyTreasury are fresh this round -- see
+    // REDEPLOY_GOVERNANCE_LAYER.md for why (real fund-custody fix,
+    // reinvestable-income restriction, corporate dividend claiming,
+    // governor in-kind compensation). Lowest relevant block is the new
+    // RoundAuction's deploy.
+    deploymentBlock: 511422173,
     addresses: {
       InvestToken: "0x38E02e24Fddc1F34a8F5BDFD1cc308407627c766",
       ShareAuction: "0x475A8c0dC244cBEb4AB648b552c07ca7834b8BF9",
-      CompanyTreasury: "0x5ddBF2BBcaa53abAb0bA36a39bea5c1fED310363",
-      RoundAuction: "0x2C88D1Ae65d5F539699dc76e61ddDDa13EC10e53",
+      CompanyTreasury: "0x6640Ba0D2E5E8652dbF2cddE7af8B01055A84241",
+      RoundAuction: "0xf78B615cC0aA83BDa50b2990817A96b0434Cc38d",
       OpenVerifier: "0x4Be82ae3f86Bdf35725f686b33b8FfB9a8aE6512",
     },
   },
