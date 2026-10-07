@@ -16,7 +16,7 @@ that introduced the fix, and the contracts themselves are independently
 verified on [Arbiscan](https://arbiscan.io), Sourcify, and Blockscout, so
 anyone can confirm the deployed bytecode matches this source.
 
-Last updated: September 2026, alongside the capital-custody and reinvestment-architecture fixes (Findings 5–8), pending the redeploy documented in REDEPLOY_GOVERNANCE_LAYER.md.
+Last updated: October 2026. Findings 5–8 shipped in the October 3 redeploy. Findings 9–10 were found afterwards, during frontend work on the governance layer, and are scheduled for the next RoundAuction/CompanyTreasury redeploy. No citizens had joined the live contracts when they were found, so no user positions were ever exposed to them.
 
 ---
 
@@ -201,6 +201,37 @@ pattern this replaced.
 
 ---
 
+### Finding 9 — An election round that closes with zero votes locks that company's governance permanently (High, fix scheduled)
+
+**Where:** `RoundAuction.tallyRound()`, together with `vote()`, `openGovernanceVote()` and `startNewTerm()`
+
+**Issue:** `openGovernanceVote()` is permissionless: anyone can open a 3-day voting round as soon as a single candidate has declared. If that round closes without a single vote cast, the election can never complete:
+
+- With two or fewer candidates, `tallyRound()` reaches the "install the plurality leader" branch, finds no leader, and reverts (`no votes cast`). Voting is already closed (`vote()` requires the deadline not to have passed), so no vote can ever be added, and every retry reverts identically.
+- With three or more candidates, the runoff branch treats the empty top two as `address(0)` and eliminates every real candidate, then opens a new round in which nobody can be voted for. The next tally reverts the same way.
+
+`startNewTerm()` cannot rescue the company, because it requires a sitting governor, and there never was one. No other function resets `governanceRound`. The result is a permanent loss of governance for that company: no governor, so no treasury auctions, vendor payments, withdrawals or reinvestment, ever.
+
+**Severity reasoning:** High rather than Critical, because no funds are lost or locked by this alone, and a single vote from any shareholder (including a candidate voting for themselves) prevents it. But it is cheap to trigger by inattention or griefing (open voting early, then nobody votes), and its effect is irreversible.
+
+**Planned fix:** When a round closes with zero votes cast, `tallyRound()` reopens the same round for a fresh voting window instead of reverting or eliminating anyone.
+
+**Interim mitigation (frontend, commit [`eb734a6`](https://github.com/amiran11/sakartvelo-exchange/commit/eb734a6)):** the site warns before voting is opened and throughout any round with no votes yet, and explains the situation if a round has closed empty. This reduces accidental triggering; it cannot prevent deliberate griefing.
+
+---
+
+### Finding 10 — Unbounded candidate list makes elections vulnerable to gas exhaustion (High, fix scheduled)
+
+**Where:** `RoundAuction.declareCandidacy()`, `tallyRound()`, `startNewTerm()`
+
+**Issue:** `declareCandidacy()` has no cap on the number of candidates per company. The only requirement is holding at least one share. `tallyRound()` loops over the full `candidateList` twice (once to rank, once to eliminate), and `startNewTerm()` loops over it again to clear state. Companies are listed with very large share supplies (millions), so an actor who spreads single shares across many wallets can register enough candidates that tallying exceeds the block gas limit. Every retry then reverts identically: the election is permanently stuck, with the same consequences as Finding 9. If it happens during a later term, `startNewTerm()` can become uncallable too.
+
+This is the same class as Findings 1 and 3, [SWC-128](https://swcregistry.io/docs/SWC-128) (Denial of Service with Block Gas Limit), in a code path that was not covered when those caps were added.
+
+**Planned fix:** a hard `MAX_CANDIDATES` cap, combined with a minimum share holding required to stand, so the capped slots cannot themselves be cheaply filled with junk candidates to keep real ones out.
+
+---
+
 ## Reviewed and verified safe (not just untested)
 
 Listed explicitly, not just implied by omission — a real review reports
@@ -239,17 +270,19 @@ place:
   gated by a minimum wallet ETH balance, which raises the cost of
   trivial wallet farming but does not prevent a well-capitalized actor
   from controlling multiple verified identities.
-- **Vote-weight double-counting via share transfer.** `votePolicy()`
-  weight is read live at the moment of voting, and "has voted" is
-  tracked per-address. Since shares become transferable after their
-  7-day lock period, a shareholder could vote, transfer their shares to
-  a second wallet they also control, and vote again — double-counting
-  the same underlying shares' voting power in a policy (dividend vs.
-  reinvest) vote. This is the same class of Sybil-resistance limitation
-  already disclosed for citizen verification generally, newly
-  identified here as applying specifically to policy voting. Not yet
-  fixed; a full fix requires either share-based vote snapshotting or a
-  stronger identity layer, both larger changes than this review's scope.
+- **Vote-weight double-counting via share transfer.** Every share-weighted
+  vote in the system reads weight live at the moment of voting and tracks
+  "has voted" per address: `votePolicy()` (dividend vs. reinvest),
+  `voteVendorPayment()`, and governor elections via `RoundAuction.vote()`.
+  Since shares become transferable after their 7-day lock period, a
+  shareholder could vote, transfer their shares to a second wallet they
+  also control, and vote again — double-counting the same underlying
+  shares. This was first identified for `votePolicy()`; an October 2026
+  re-check confirmed the same pattern in the other two votes. It is the
+  same class of Sybil-resistance limitation already disclosed for citizen
+  verification generally. Not yet fixed; a full fix requires either
+  share-based vote snapshotting or a stronger identity layer, both larger
+  changes than this review's scope.
 - **Single owner-controlled admin key** — controls which assets are
   listed and which addresses hold verifier privileges. A real,
   unresolved centralization point.
@@ -259,6 +292,37 @@ place:
   similar severity have been ruled out.
 - **No formal game-theoretic / incentive-compatibility proof** for the
   proportional round auction's behavior under strategic bidding.
+
+## Current status: pilot, not production
+
+After Findings 9–10 are fixed and redeployed, the contracts are intended
+for a **public pilot**: real people using real tokens in small amounts,
+clearly presented as experimental. They are **not** production-ready for
+anything representing real state assets. The gap to production, stated
+plainly:
+
+1. **Independent external audit.** Every finding in this document came
+   from the author's own review with AI assistance. An external audit is
+   the single most important missing step, and is the purpose of our
+   Arbitrum security-audit grant application.
+2. **Automated test suite, including fuzz and invariant testing.** Most
+   behaviour has so far been tested by hand on testnet and mainnet. A
+   production system needs repeatable tests, especially for the
+   capital-custody invariant (Finding 5) and every capped loop
+   (Findings 1, 3, 10).
+3. **Multisig admin control.** Listing, verifier and wiring privileges
+   currently sit with a single owner key (see limitations above).
+4. **Real proof-of-personhood.** See limitations above; this also
+   underlies the vote double-counting issue.
+5. **Legal review.** Tokenised shares in state assets very likely fall
+   under securities and privatisation law, in Georgia and in users'
+   own jurisdictions.
+6. **Operations:** monitoring of live contracts, an incident-response
+   plan, and an upgrade path that does not require wiping every user's
+   position on redeploy, as every redeploy so far has.
+
+Items 1–3 are engineering work. Items 4–5 are policy decisions about
+what the project is meant to be, as much as they are code.
 
 ## What this document is not
 
