@@ -252,16 +252,123 @@ const COMPANY_ID_PROBE_RANGE = 20;
 // since the post-bid refresh call was throwing right after.
 const DEPLOYMENT_BLOCK = ACTIVE_NETWORK.deploymentBlock;
 
-async function queryFilterChunked(contract, filter, fromBlock = DEPLOYMENT_BLOCK) {
-  const latest = await contract.runner.provider.getBlockNumber();
-  const CHUNK = 9000; // safely under the common 10,000-block RPC cap
-  let events = [];
-  for (let start = fromBlock; start <= latest; start += CHUNK) {
-    const end = Math.min(start + CHUNK - 1, latest);
-    const chunk = await contract.queryFilter(filter, start, end);
-    events = events.concat(chunk);
+// ---- Event-log reading, cached ----
+//
+// Bids and candidates are found by scanning the event log. Scanning from
+// the deploy block on every page load meant ~80 RPC requests per company
+// card on day one, growing every day. Instead, each event type is scanned
+// ONCE for the whole contract (all companies together), the result is
+// saved in this browser, and later visits only scan the new blocks since
+// the last visit. Per-company lookups then filter that shared list locally.
+//
+// The newest SETTLE_MARGIN blocks are never saved, only read fresh each
+// time, so a short chain reorganisation can't leave a stale log behind.
+
+const LOG_CHUNK = 9000; // safely under the common 10,000-block RPC cap
+const LOG_PARALLEL = 4;
+const SETTLE_MARGIN = 1000; // ~4 minutes of Arbitrum blocks
+const LOG_CACHE_VERSION = 1;
+
+const settledLogs = new Map(); // cacheKey -> { settledBlock, logs }
+const inflightSync = new Map(); // cacheKey -> Promise, so ten cards share one scan
+
+function logCacheKey(address, topic0) {
+  return `sx-logs:v${LOG_CACHE_VERSION}:${ACTIVE_NETWORK.chainIdHex}:${address.toLowerCase()}:${topic0}:${DEPLOYMENT_BLOCK}`;
+}
+
+function readStoredLogs(key) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.settledBlock !== "number" || !Array.isArray(parsed.logs)) return null;
+    return parsed;
+  } catch {
+    return null;
   }
-  return events;
+}
+
+function writeStoredLogs(key, value) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage full or blocked (private browsing): the in-memory copy still
+    // works for this visit; the next visit just rescans.
+  }
+}
+
+async function getLogsRange(provider, address, topic0, fromBlock, toBlock) {
+  const ranges = [];
+  for (let start = fromBlock; start <= toBlock; start += LOG_CHUNK) {
+    ranges.push([start, Math.min(start + LOG_CHUNK - 1, toBlock)]);
+  }
+  // Read up to LOG_PARALLEL chunks at a time: much faster on a first visit,
+  // while staying gentle enough for public RPC rate limits.
+  const results = new Array(ranges.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < ranges.length) {
+      const i = next++;
+      const [start, end] = ranges[i];
+      results[i] = await provider.getLogs({ address, topics: [topic0], fromBlock: start, toBlock: end });
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(LOG_PARALLEL, ranges.length) }, worker));
+  return results.flat().map((l) => ({ topics: [...l.topics], data: l.data, blockNumber: l.blockNumber, index: l.index }));
+}
+
+// Returns every log of one event type on one contract, from the deploy
+// block to the latest block.
+async function syncEventLogs(provider, address, topic0) {
+  const key = logCacheKey(address, topic0);
+  if (inflightSync.has(key)) return inflightSync.get(key);
+
+  const job = (async () => {
+    const latest = await provider.getBlockNumber();
+    const settleTarget = latest - SETTLE_MARGIN;
+
+    let cached = settledLogs.get(key) || readStoredLogs(key) || { settledBlock: DEPLOYMENT_BLOCK - 1, logs: [] };
+
+    if (settleTarget > cached.settledBlock) {
+      const fresh = await getLogsRange(provider, address, topic0, cached.settledBlock + 1, settleTarget);
+      cached = { settledBlock: settleTarget, logs: cached.logs.concat(fresh) };
+      writeStoredLogs(key, cached);
+    }
+    settledLogs.set(key, cached);
+
+    const tailFrom = Math.max(cached.settledBlock + 1, DEPLOYMENT_BLOCK);
+    const tail = tailFrom <= latest ? await getLogsRange(provider, address, topic0, tailFrom, latest) : [];
+    return cached.logs.concat(tail);
+  })();
+
+  inflightSync.set(key, job);
+  try {
+    return await job;
+  } finally {
+    inflightSync.delete(key);
+  }
+}
+
+function topicMatches(wanted, actual) {
+  if (wanted === null || wanted === undefined) return true;
+  const options = Array.isArray(wanted) ? wanted : [wanted];
+  return options.some((w) => w === null || (actual && w.toLowerCase() === actual.toLowerCase()));
+}
+
+// Drop-in replacement for the old chunked queryFilter: same filter in,
+// same { args } events out, but served from the shared cached scan.
+async function queryFilterChunked(contract, filter) {
+  const provider = contract.runner.provider;
+  const address = await contract.getAddress();
+  const topics = await filter.getTopicFilter();
+  const all = await syncEventLogs(provider, address, topics[0]);
+  return all
+    .filter((l) => topics.slice(1).every((t, i) => topicMatches(t, l.topics[i + 1])))
+    .sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index)
+    .map((l) => {
+      const parsed = contract.interface.parseLog({ topics: l.topics, data: l.data });
+      return { args: parsed.args, blockNumber: l.blockNumber };
+    });
 }
 
 export async function getListedCompanies(provider) {
