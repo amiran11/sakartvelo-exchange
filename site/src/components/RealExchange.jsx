@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Wallet as WalletIcon, ExternalLink, Loader2 } from "lucide-react";
 import { connectWallet, getClaimEligibility, claimReal, getVerifySelfEligibility, verifySelfReal, CONTRACT_ADDRESSES, ACTIVE_NETWORK, isMobileDevice, getMetaMaskDeepLink } from "../web3.js";
 import RealAuctions from "./RealAuctions.jsx";
@@ -22,6 +22,36 @@ export default function RealExchange({ onBack }) {
   const [errorMsg, setErrorMsg] = useState("");
   const [isMobileWalletError, setIsMobileWalletError] = useState(false);
   const [txHash, setTxHash] = useState(null);
+
+  // When the person switches accounts in MetaMask (for example, from their
+  // governor account to their operating-key account), reconnect so every
+  // screen reads and signs as the newly selected account.
+  useEffect(() => {
+    if (!wallet || !window.ethereum?.on) return;
+    const onAccountsChanged = async (accounts) => {
+      if (!accounts || accounts.length === 0) {
+        setWallet(null);
+        setEligibility(null);
+        setVerifyEligibility(null);
+        return;
+      }
+      try {
+        const w = await connectWallet();
+        setWallet(w);
+        const [e, v] = await Promise.all([
+          getClaimEligibility(w.address, w.provider),
+          getVerifySelfEligibility(w.address, w.provider),
+        ]);
+        setEligibility(e);
+        setVerifyEligibility(v);
+      } catch (err) {
+        setErrorMsg(err.message || "Couldn't switch accounts.");
+        setStatus("error");
+      }
+    };
+    window.ethereum.on("accountsChanged", onAccountsChanged);
+    return () => window.ethereum.removeListener?.("accountsChanged", onAccountsChanged);
+  }, [wallet]);
 
   const handleConnect = async () => {
     setStatus("connecting");

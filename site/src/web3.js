@@ -328,18 +328,27 @@ export async function finalizeAuctionReal(signer, companyId) {
 }
 
 // ---- Real governance (Stage 2, part 2) ----
+//
+// Every governance helper takes a `source` contract name. ShareAuction and
+// RoundAuction expose identical election functions, so one set of helpers
+// serves both. Default stays "ShareAuction" so the original screen keeps
+// working unchanged; RoundAuction cards pass "RoundAuction" explicitly.
 
-export async function getCompanyGovernance(companyId, provider) {
-  const shareAuction = await getContract("ShareAuction", provider);
+export async function getCompanyGovernance(companyId, provider, source = "ShareAuction") {
+  const c = await getContract(source, provider);
   const [round, voteEnd, governor, termEnd, operatingKey, termNum] = await Promise.all([
-    shareAuction.governanceRound(companyId),
-    shareAuction.governanceVoteEnd(companyId),
-    shareAuction.companyGovernor(companyId),
-    shareAuction.governorTermEnd(companyId),
-    shareAuction.governorOperatingKey(companyId),
-    shareAuction.termNumber(companyId),
+    c.governanceRound(companyId),
+    c.governanceVoteEnd(companyId),
+    c.companyGovernor(companyId),
+    c.governorTermEnd(companyId),
+    c.governorOperatingKey(companyId),
+    c.termNumber(companyId),
   ]);
-  return { round, voteEnd, governor, termEnd, operatingKey, termNum };
+  let totalVotesCast = 0n;
+  if (round > 0n) {
+    totalVotesCast = await c.roundTotalVotesCast(companyId, round);
+  }
+  return { round, voteEnd, governor, termEnd, operatingKey, termNum, totalVotesCast };
 }
 
 // Same event-log pattern as bids — candidateList is a public array with no
@@ -347,70 +356,90 @@ export async function getCompanyGovernance(companyId, provider) {
 // not probing indices. eliminated() and registered status are then read
 // fresh from the contract per-candidate, since elimination happens after
 // the declaration event and wouldn't show up in the log itself.
-export async function getCandidates(companyId, provider) {
-  const shareAuction = await getContract("ShareAuction", provider);
-  const filter = shareAuction.filters.CandidateDeclared(companyId);
-  const events = await queryFilterChunked(shareAuction, filter);
-  const round = await shareAuction.governanceRound(companyId);
-  const seen = new Set();
+// startNewTerm() clears candidates without emitting per-candidate events,
+// so `registered` is re-read too: a declaration from an earlier term whose
+// candidate was cleared must not show up as a current candidate.
+export async function getCandidates(companyId, provider, source = "ShareAuction") {
+  const c = await getContract(source, provider);
+  const filter = c.filters.CandidateDeclared(companyId);
+  const events = await queryFilterChunked(c, filter);
+  const round = await c.governanceRound(companyId);
+  const latestProgram = new Map();
+  for (const e of events) latestProgram.set(e.args[1], e.args[2]);
   const candidates = [];
-  for (const e of events) {
-    const addr = e.args[1];
-    if (seen.has(addr)) continue;
-    seen.add(addr);
-    const [isEliminated, votes] = await Promise.all([
-      shareAuction.eliminated(companyId, addr),
-      round > 0n ? shareAuction.roundVotes(companyId, round, addr) : Promise.resolve(0n),
+  for (const [addr, program] of latestProgram) {
+    const [cand, isEliminated, votes] = await Promise.all([
+      c.candidates(companyId, addr),
+      c.eliminated(companyId, addr),
+      round > 0n ? c.roundVotes(companyId, round, addr) : Promise.resolve(0n),
     ]);
-    candidates.push({ address: addr, program: e.args[2], eliminated: isEliminated, votes });
+    if (!cand.registered) continue;
+    candidates.push({ address: addr, program, eliminated: isEliminated, votes });
   }
   return candidates;
 }
 
-export async function getMyShareCount(companyId, address, provider) {
-  const shareAuction = await getContract("ShareAuction", provider);
-  return shareAuction.companyShareCount(companyId, address);
+export async function getMyShareCount(companyId, address, provider, source = "ShareAuction") {
+  const c = await getContract(source, provider);
+  return c.companyShareCount(companyId, address);
 }
 
-export async function hasVotedThisRound(companyId, round, address, provider) {
-  const shareAuction = await getContract("ShareAuction", provider);
-  return shareAuction.roundHasVoted(companyId, round, address);
+export async function hasVotedThisRound(companyId, round, address, provider, source = "ShareAuction") {
+  const c = await getContract(source, provider);
+  return c.roundHasVoted(companyId, round, address);
 }
 
-export async function declareCandidacyReal(signer, companyId, program) {
-  const shareAuction = await getContract("ShareAuction", signer);
-  const tx = await shareAuction.declareCandidacy(companyId, program);
+export async function declareCandidacyReal(signer, companyId, program, source = "ShareAuction") {
+  const c = await getContract(source, signer);
+  const tx = await c.declareCandidacy(companyId, program);
   return tx.wait();
 }
 
-export async function openGovernanceVoteReal(signer, companyId) {
-  const shareAuction = await getContract("ShareAuction", signer);
-  const tx = await shareAuction.openGovernanceVote(companyId);
+export async function openGovernanceVoteReal(signer, companyId, source = "ShareAuction") {
+  const c = await getContract(source, signer);
+  const tx = await c.openGovernanceVote(companyId);
   return tx.wait();
 }
 
-export async function voteReal(signer, companyId, candidateAddress) {
-  const shareAuction = await getContract("ShareAuction", signer);
-  const tx = await shareAuction.vote(companyId, candidateAddress);
+export async function voteReal(signer, companyId, candidateAddress, source = "ShareAuction") {
+  const c = await getContract(source, signer);
+  const tx = await c.vote(companyId, candidateAddress);
   return tx.wait();
 }
 
-export async function tallyRoundReal(signer, companyId) {
-  const shareAuction = await getContract("ShareAuction", signer);
-  const tx = await shareAuction.tallyRound(companyId);
+export async function tallyRoundReal(signer, companyId, source = "ShareAuction") {
+  const c = await getContract(source, signer);
+  const tx = await c.tallyRound(companyId);
   return tx.wait();
 }
 
-export async function setOperatingKeyReal(signer, companyId, operatingKeyAddress) {
-  const shareAuction = await getContract("ShareAuction", signer);
-  const tx = await shareAuction.setOperatingKey(companyId, operatingKeyAddress);
+export async function setOperatingKeyReal(signer, companyId, operatingKeyAddress, source = "ShareAuction") {
+  const c = await getContract(source, signer);
+  const tx = await c.setOperatingKey(companyId, operatingKeyAddress);
   return tx.wait();
 }
 
-export async function startNewTermReal(signer, companyId) {
-  const shareAuction = await getContract("ShareAuction", signer);
-  const tx = await shareAuction.startNewTerm(companyId);
+export async function startNewTermReal(signer, companyId, source = "ShareAuction") {
+  const c = await getContract(source, signer);
+  const tx = await c.startNewTerm(companyId);
   return tx.wait();
+}
+
+// ETH balance of any address — used to warn a governor when their
+// operating-key account doesn't have enough ETH to pay for gas.
+export async function getEthBalance(address, provider) {
+  return provider.getBalance(address);
+}
+
+// Checks an address the user pasted. Returns the checksummed form, or null
+// if it isn't a valid Ethereum address.
+export async function normalizeAddress(input) {
+  const { getAddress } = await getEthers();
+  try {
+    return getAddress(input.trim());
+  } catch {
+    return null;
+  }
 }
 
 // Generates a fresh keypair client-side for a newly-elected governor to

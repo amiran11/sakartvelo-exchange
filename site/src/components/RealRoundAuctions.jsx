@@ -8,6 +8,7 @@ import {
   placeRoundBid,
   settleRoundReal,
 } from "../web3.js";
+import CompanyGovernance from "./CompanyGovernance.jsx";
 
 function fmtInvest(raw) {
   return (raw / 10n ** 18n).toLocaleString();
@@ -176,6 +177,8 @@ function RoundCompanyCard({ company, wallet, onChanged }) {
       )}
 
       {error && <div className="mono" style={{ fontSize: 11, color: "#C97D6F", marginTop: 8 }}>{error}</div>}
+
+      <CompanyGovernance company={company} wallet={wallet} source="RoundAuction" />
     </div>
   );
 }
