@@ -30,6 +30,8 @@ interface IShareRegistry {
 ///   - CHANGED (Finding 10): at most 20 candidates per election, each
 ///     holding at least 0.1% of the shares issued so far; candidacy closes
 ///     once voting opens.
+///   - CHANGED (Finding 20): round ids keep counting up across terms, so a
+///     new term's election never inherits the previous term's votes.
 ///   - CHANGED (vote double-counting limitation): every vote is weighted by
 ///     the voter's shares one second BEFORE that round opened, so moving
 ///     shares to a second wallet mid-vote gains nothing.
@@ -56,7 +58,11 @@ contract Governance {
     mapping(uint256 => address[]) public candidateList;
     mapping(uint256 => mapping(address => bool)) public eliminated;
 
-    mapping(uint256 => uint256) public governanceRound; // 0 = candidacy phase
+    mapping(uint256 => uint256) public governanceRound; // active round id, 0 = candidacy phase
+    // Round ids never repeat for a company, across all terms (Finding 20:
+    // v7 restarted at round 1 every term, so the previous term's votes and
+    // "already voted" flags carried into the new election).
+    mapping(uint256 => uint256) public lastRoundId;
     mapping(uint256 => uint256) public governanceVoteEnd;
     mapping(uint256 => mapping(uint256 => uint256)) public roundSnapshot; // companyId => round => balance timestamp
     mapping(uint256 => mapping(uint256 => mapping(address => uint256))) public roundVotes;
@@ -117,11 +123,12 @@ contract Governance {
         _requireEligible(companyId);
         require(governanceRound[companyId] == 0, "GOV: already open");
         require(candidateList[companyId].length > 0, "GOV: no candidates yet");
-        _startRound(companyId, 1);
+        _startRound(companyId);
         emit GovernanceOpened(companyId, governanceVoteEnd[companyId]);
     }
 
-    function _startRound(uint256 companyId, uint256 round) internal {
+    function _startRound(uint256 companyId) internal returns (uint256 round) {
+        round = ++lastRoundId[companyId];
         governanceRound[companyId] = round;
         governanceVoteEnd[companyId] = block.timestamp + GOVERNANCE_VOTE_WINDOW;
         roundSnapshot[companyId][round] = block.timestamp - 1;
@@ -201,8 +208,8 @@ contract Governance {
                 eliminated[companyId][cand] = true;
             }
         }
-        _startRound(companyId, round + 1);
-        emit RoundAdvanced(companyId, round + 1, first, second);
+        uint256 next = _startRound(companyId);
+        emit RoundAdvanced(companyId, next, first, second);
     }
 
     function _installGovernor(uint256 companyId, address winner, uint256 winningVotes) internal {

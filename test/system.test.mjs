@@ -103,7 +103,7 @@ console.log("Governance: votes use balances from before the round opened");
   await warp(8 * DAY); // past the share transfer lock
   await warp(2); await w(GOV.openGovernanceVote(0));
   await w(GOV.connect(a).vote(0, b.address));
-  await w(RA.connect(a).transferFrom(a.address, c.address, 0)); await w(RA.connect(a).transferFrom(a.address, c.address, 1));
+  await w(RA.connect(a).transferFrom(a.address, c.address, 0, { gasLimit: 300000 })); await w(RA.connect(a).transferFrom(a.address, c.address, 1, { gasLimit: 300000 }));
   ok(await reverts(async () => GOV.connect(c).vote(0, a.address), "no shares at snapshot"), "shares moved to a second wallet mid-vote can't vote again");
   await round(RA, 0, [[d, 1]]); // d buys a new share after voting opened
   ok(await reverts(async () => GOV.connect(d).vote(0, a.address), "no shares at snapshot"), "shares acquired after the round opened don't count");
@@ -163,7 +163,8 @@ console.log("Treasury: sealed-bid auction with claim-your-own refunds");
   await warp(1 * DAY + 1);
   const capBefore = (await RA.companies(0)).capital;
   const st = await w(CT.settleTreasuryAuction(0));
-  ok((await RA.companies(0)).capital === capBefore + E(60), "settle credits winning bid (50) + c's forfeited deposit (10) to capital");
+  ok((await RA.companies(0)).capital === capBefore + E(10), "c's forfeited deposit (10) goes to capital");
+  ok((await RA.reinvestableIncome(0)) === E(50), "winning bid (50) becomes reinvestable income");
   console.log(`     settle gas: ${st.gasUsed} (constant, no bidder loop)`);
   const balA = await IT.balanceOf(a.address);
   await w(CT.connect(a).claimTreasuryAuction(0)); await w(CT.connect(b).claimTreasuryAuction(0));
@@ -212,7 +213,7 @@ console.log("Treasury: end-of-term dividend with a record date");
   ok(record === await GOV.governorTermEnd(0), "record date = the moment term 1 ended");
   await w(CT.connect(a).votePolicy(0, 1, true)); await w(CT.connect(c).votePolicy(0, 1, false));
   // after the record date, a moves all 3 shares to b
-  for (let t = 0; t < 3; t++) await w(RA.connect(a).transferFrom(a.address, b.address, t));
+  for (let t = 0; t < 3; t++) await w(RA.connect(a).transferFrom(a.address, b.address, t, { gasLimit: 300000 }));
   await warp(3 * DAY + 1);
   const cap = (await RA.companies(0)).capital;
   await w(CT.resolvePolicyVote(0, 1));
@@ -247,6 +248,54 @@ console.log("Treasury: INVEST market");
   await w(CT.connect(key).governorOfferInvest(0, E(50), usd, E(10))); await w(CT.connect(buyer).buyInvest(2));
   ok((await CT.companyTokenBalance(0, usd)) === E(10), "sale proceeds land in the company's custody balance");
   ok(await ctInvariant(IT, CT, 0n), "treasury holds 0 INVEST with no open offers");
+}
+
+
+console.log("End to end: asset sale -> invest -> corporate shares, vote, dividend");
+{
+  const { IT, RA, GOV, CT, cits } = await system(10);
+  const [g, key, buyer, t1, t2, t3] = cits;
+  const MOCK = await deploy("MockERC20", "MOCK"); const mock = await MOCK.getAddress();
+  // company 0 gets a governor and an asset to sell
+  await w(RA.listCompany(0, "Origin", 2, 3600)); await round(RA, 0, [[g, 1]]);
+  await elect(GOV, 0, g); await w(GOV.connect(g).setOperatingKey(0, key.address));
+  await w(MOCK.mint(g.address, E(1000))); await w(MOCK.connect(g).approve(await CT.getAddress(), ethers.MaxUint256)); await w(CT.connect(g).depositToken(0, mock, E(1000)));
+  await w(CT.connect(key).openTreasuryAuction(0, mock, E(1000)));
+  const salt = ethers.id("s");
+  await w(CT.connect(buyer).commitBid(0, await CT.commitHashFor(0, E(600), salt, buyer.address)));
+  await warp(2 * DAY + 1); await w(CT.connect(buyer).revealBid(0, E(600), salt));
+  await warp(1 * DAY + 1); await w(CT.settleTreasuryAuction(0));
+  ok((await RA.reinvestableIncome(0)) === E(600), "selling the asset earns 600 INVEST of reinvestable income");
+  await w(CT.connect(buyer).claimTreasuryAuction(0));
+  ok((await MOCK.balanceOf(buyer.address)) === E(1000), "buyer claims the 1,000 tokens they won (and their deposit)");
+  // company 1 is open for bids; company 0 invests 500 of that income
+  await w(RA.listCompany(1, "Target", 200, 3 * DAY));
+  await w(RA.connect(key).invest(0, 1, E(500)));
+  await round(RA, 1, [[t1, 2.5]]); // baseline 2.5 -> corporate entitlement 200 = whole company? no: 500/2.5 = 200 > 200-0? fits exactly
+  const corp = await RA.corporateHolder(0);
+  const corpShares = await RA.companyShareCount(1, corp), govShares = await RA.companyShareCount(1, g.address);
+  ok(corpShares + govShares === 200n && govShares === 2n, `corporate win: ${corpShares} shares to company 0, ${govShares} (1%) to its governor`);
+  ok((await RA.reinvestableIncome(0)) === E(100) + E(2.5) * 0n, "100 INVEST of income left uninvested");
+  // company 0 votes its shares in company 1's election
+  await w(GOV.connect(g).declareCandidacy(1, "governor-of-1"));
+  await warp(2); await w(GOV.openGovernanceVote(1));
+  await w(GOV.connect(key).voteAsCorporation(0, 1, g.address));
+  ok((await GOV.roundVotes(1, 1, g.address)) === corpShares, "company 0 votes its 198 corporate shares in company 1");
+  await warp(3 * DAY + 1); await w(GOV.tallyRound(1));
+  ok((await GOV.companyGovernor(1)) === g.address, "and that elects company 1's governor");
+  // company 1's term ends, shareholders vote a dividend, company 0 claims its part
+  await warp(30 * DAY + 1);
+  // company 0's governor term also ended; re-elect so it can act
+  await w(GOV.startNewTerm(0)); await elect(GOV, 0, g); await w(GOV.connect(g).setOperatingKey(0, key.address));
+  ok((await GOV.lastRoundId(0)) === 2n && (await GOV.roundVotes(0, 2, g.address)) === 1n && (await GOV.termNumber(0)) === 2n, "term-2 election uses a fresh round: same voter can vote again, old votes don't carry over (Finding 20)");
+  await w(CT.openPolicyVote(1, 1));
+  await w(CT.connect(g).votePolicy(1, 1, true));
+  await warp(3 * DAY + 1); await w(CT.resolvePolicyVote(1, 1));
+  const owed = await CT.dividendOwed(1, 1, corp);
+  const before = await RA.reinvestableIncome(0);
+  await w(CT.connect(key).claimDividendAsCorporation(0, 1, 1));
+  ok(owed > 0n && (await RA.reinvestableIncome(0)) === before + owed, `corporate dividend (${ethers.formatEther(owed)} INVEST) lands in company 0's reinvestable income`);
+  ok(await ctInvariant(IT, CT, await CT.dividendRemaining(1, 1)), "treasury holds exactly the unclaimed dividend");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

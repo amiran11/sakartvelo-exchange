@@ -46,6 +46,10 @@ interface IGovernanceView {
 ///     failing transfer can't block anyone else.
 ///   - Deposits credit what actually arrived (fee-on-transfer safe).
 ///   - Governor checks read the separate Governance contract.
+///   - Treasury-auction sale proceeds become reinvestable income. Before
+///     this, the only income source was dividends on shares bought with
+///     invest(), which itself needed income: corporate investment could
+///     never start.
 ///
 /// FICTIONAL SIMULATION. Not a real financial product, security, or claim
 /// on any real-world asset.
@@ -221,17 +225,25 @@ contract CompanyTreasury is Ownable {
         emit BidRevealed(auctionId, msg.sender, amount);
     }
 
-    /// @notice Permissionless after the reveal window. Constant cost: pays
-    /// the winning bid and every forfeited deposit (commits never revealed)
-    /// into the company's capital. Bidders then claim individually.
+    /// @notice Permissionless after the reveal window. Constant cost: the
+    /// winning bid becomes the company's reinvestable income, forfeited
+    /// deposits go to its capital. Bidders then claim individually.
     function settleTreasuryAuction(uint256 auctionId) external {
         TreasuryAuction storage a = treasuryAuctions[auctionId];
         require(a.revealEnd > 0, "CT: unknown auction");
         require(block.timestamp >= a.revealEnd, "CT: reveal window still open");
         require(!a.settled, "CT: already settled");
         a.settled = true;
-        uint256 toCapital = (a.committed - a.revealed) * a.deposit + a.leadingAmount;
-        if (toCapital > 0) _creditCapital(a.companyId, toCapital);
+        // Forfeited deposits (commits never revealed) are penalties: capital.
+        uint256 forfeited = (a.committed - a.revealed) * a.deposit;
+        if (forfeited > 0) _creditCapital(a.companyId, forfeited);
+        // Sale proceeds are revenue the company earned: they become
+        // reinvestable income, which governors can invest() in other
+        // companies. Original capital is still never reinvested.
+        if (a.leadingAmount > 0) {
+            investToken.transfer(address(roundAuction), a.leadingAmount);
+            roundAuction.addReinvestableIncome(a.companyId, a.leadingAmount);
+        }
         if (a.leader == address(0)) {
             companyTokenBalance[a.companyId][a.token] += a.amount; // unsold: back to the company
         }
