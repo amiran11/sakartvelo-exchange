@@ -1,94 +1,89 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 import "./InvestToken.sol";
-import "./RoundAuction.sol";
 
-/// @title CompanyTreasury
-/// @notice Everything a company's governor can do that doesn't require
-/// touching a Share NFT directly lives here instead of in RoundAuction --
-/// split into its own contract purely because the issuance/governance
-/// contract's deployed bytecode exceeded Ethereum's 24,576-byte limit
-/// (EIP-170) once this much functionality was added. This contract reads
-/// company/governor/share state from RoundAuction directly (it's a real
-/// import, not just an interface) and calls back into
-/// RoundAuction.adjustCapital() -- a function restricted to only this
-/// contract's address -- whenever a company's INVEST capital needs to
-/// move.
+/// @notice The parts of RoundAuction (v8) the treasury uses.
+interface ICapitalLedger {
+    function companies(uint256 companyId) external view returns (
+        string memory name, uint256 totalShares, uint256 sharesIssued, uint256 currentRound,
+        uint256 roundEnd, uint256 roundDuration, bool finalized, uint256 firstMintedAt, uint256 capital
+    );
+    function shareCountAt(uint256 companyId, address holder, uint256 ts) external view returns (uint256);
+    function sharesIssuedAt(uint256 companyId, uint256 ts) external view returns (uint256);
+    function corporateHolder(uint256 companyId) external pure returns (address);
+    function adjustCapital(uint256 companyId, int256 delta) external;
+    function addReinvestableIncome(uint256 companyId, uint256 amount) external;
+}
+
+/// @notice The parts of Governance the treasury uses.
+interface IGovernanceView {
+    function governorOperatingKey(uint256 companyId) external view returns (address);
+    function governorTermEnd(uint256 companyId) external view returns (uint256);
+    function termNumber(uint256 companyId) external view returns (uint256);
+    function termEndedAt(uint256 companyId, uint256 term) external view returns (uint256);
+}
+
+/// @title CompanyTreasury (v6)
+/// @notice What a company does with its money once it has a governor:
+/// custody of any ERC-20, a 5%-per-term free withdrawal allowance, sealed-
+/// bid treasury auctions and shareholder-approved vendor payments above
+/// that, the end-of-term dividend vote, and the INVEST secondary market.
 ///
-/// @dev Originally pointed at ShareAuction. Repointed to RoundAuction
-/// since that is the contract actually used for real listings -- a
-/// ShareAuction-pointed CompanyTreasury had no companies to manage at all,
-/// since ShareAuction currently has zero real listings. RoundAuction's
-/// Company struct has 9 fields (vs ShareAuction's 7 -- it carries extra
-/// per-round state like currentRound/roundDuration that a one-shot auction
-/// doesn't need), so every tuple destructuring of companies() below was
-/// re-checked and adjusted field-by-field, not just search-replaced --
-/// `capital` in particular moved from the 7th/last position to the
-/// 9th/last position.
+/// v6 changes (SECURITY_REVIEW.md Findings 16-19):
+///   - Dividends use a record date: entitlement is the shares held when
+///     the term ended, read from RoundAuction's balance history. Moving
+///     shares to a second wallet can no longer claim twice.
+///   - The governor's discretionary mid-term distribute() is removed;
+///     the end-of-term shareholder vote is the only dividend path.
+///   - Vendor payments need a 20% quorum of issued shares, with votes
+///     weighted by shares held when the proposal was made.
+///   - Treasury auctions track the leading bid as reveals arrive and let
+///     every bidder claim their own refund: no loop over bidders, and one
+///     failing transfer can't block anyone else.
+///   - Deposits credit what actually arrived (fee-on-transfer safe).
+///   - Governor checks read the separate Governance contract.
 ///
 /// FICTIONAL SIMULATION. Not a real financial product, security, or claim
-/// on any real-world asset. Any resemblance to real entities is a
-/// gamified rule-set only.
+/// on any real-world asset.
 contract CompanyTreasury is Ownable {
     using SafeERC20 for IERC20;
 
     string public constant DISCLAIMER = "FICTIONAL SIMULATION. Not a real financial product, security, or claim on any real-world asset. Any resemblance to real entities is a gamified rule-set only.";
 
     InvestToken public immutable investToken;
-    RoundAuction public immutable roundAuction;
+    ICapitalLedger public immutable roundAuction;
+    IGovernanceView public immutable governance;
 
-    constructor(address _investToken, address _roundAuction) Ownable(msg.sender) {
+    constructor(address _investToken, address _roundAuction, address _governance) Ownable(msg.sender) {
+        require(_investToken != address(0) && _roundAuction != address(0) && _governance != address(0), "CT: zero address");
         investToken = InvestToken(_investToken);
-        roundAuction = RoundAuction(_roundAuction);
+        roundAuction = ICapitalLedger(_roundAuction);
+        governance = IGovernanceView(_governance);
     }
 
-    /// @dev Mirrors RoundAuction's onlyGovernor: checks the term's
-    /// registered OPERATING KEY (not the elected officeholder's personal
-    /// wallet) and that the term hasn't expired.
     modifier onlyGovernor(uint256 companyId) {
-        require(msg.sender == roundAuction.governorOperatingKey(companyId), "CompanyTreasury: not the current operating key");
-        require(block.timestamp < roundAuction.governorTermEnd(companyId), "CompanyTreasury: term expired");
+        require(msg.sender == governance.governorOperatingKey(companyId), "CT: not operating key");
+        require(block.timestamp < governance.governorTermEnd(companyId), "CT: term expired");
         _;
     }
 
-    function _companyShares(uint256 companyId, address holder) internal view returns (uint256) {
-        return roundAuction.companyShareCount(companyId, holder);
+    function _company(uint256 companyId) internal view returns (uint256 totalShares, uint256 capital) {
+        (, totalShares, , , , , , , capital) = roundAuction.companies(companyId);
+    }
+
+    /// @dev Moves INVEST this contract holds back into RoundAuction and
+    /// credits it to a company's capital, in one step.
+    function _creditCapital(uint256 companyId, uint256 amount) internal {
+        investToken.transfer(address(roundAuction), amount);
+        roundAuction.adjustCapital(companyId, int256(amount));
     }
 
     // ---------------------------------------------------------------------
-    // Dividend during a governor's own term (distinct from the mandatory
-    // end-of-term vote below -- this is the sitting governor's own choice).
-    // ---------------------------------------------------------------------
-
-    event DividendDistributed(uint256 indexed companyId, uint256 totalAmount);
-
-    /// @notice Governor-only: pays INVEST capital out to the supplied
-    /// holder list, pro-rata to shares held. The caller supplies the list
-    /// because Solidity can't enumerate "everyone who holds a share" on
-    /// its own -- see RoundAuction's companyShareCount for the source data.
-    function distribute(uint256 companyId, address[] calldata holders, uint256 amount) external onlyGovernor(companyId) {
-        // RoundAuction.companies() returns a 9-tuple:
-        // (name, totalShares, sharesIssued, currentRound, roundEnd,
-        //  roundDuration, finalized, firstMintedAt, capital)
-        (, , uint256 sharesIssued, , , , , , uint256 capital) = roundAuction.companies(companyId);
-        require(capital >= amount, "CompanyTreasury: insufficient capital");
-        require(sharesIssued > 0, "CompanyTreasury: no shares issued");
-        roundAuction.adjustCapital(companyId, -int256(amount));
-        for (uint256 i = 0; i < holders.length; i++) {
-            uint256 held = _companyShares(companyId, holders[i]);
-            if (held == 0) continue;
-            uint256 cut = (amount * held) / sharesIssued;
-            if (cut > 0) investToken.transfer(holders[i], cut);
-        }
-        emit DividendDistributed(companyId, amount);
-    }
-
-    // ---------------------------------------------------------------------
-    // Multi-asset custody: what a company holds beyond INVEST.
+    // Custody of any ERC-20, and the 5%-per-term free allowance
     // ---------------------------------------------------------------------
 
     mapping(uint256 => mapping(address => uint256)) public companyTokenBalance;
@@ -97,71 +92,51 @@ contract CompanyTreasury is Ownable {
     event TokenWithdrawn(uint256 indexed companyId, address indexed token, address indexed to, uint256 amount);
 
     function depositToken(uint256 companyId, address token, uint256 amount) external {
-        (string memory name, , , , , , , , ) = roundAuction.companies(companyId);
-        require(bytes(name).length > 0, "CompanyTreasury: unknown company");
-        require(amount > 0, "CompanyTreasury: amount must be > 0");
+        (uint256 totalShares, ) = _company(companyId);
+        require(totalShares > 0, "CT: unknown company");
+        require(amount > 0, "CT: amount must be > 0");
+        uint256 before = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        companyTokenBalance[companyId][token] += amount;
-        emit TokenDeposited(companyId, token, msg.sender, amount);
+        uint256 received = IERC20(token).balanceOf(address(this)) - before;
+        companyTokenBalance[companyId][token] += received;
+        emit TokenDeposited(companyId, token, msg.sender, received);
     }
 
-    /// @notice The governor's UNILATERAL reach into any single ERC-20 a
-    /// company holds is capped at 5% of that asset's balance at the start
-    /// of their term -- snapshotted the first time that asset is touched
-    /// this term, not recomputed live (a live cap is gameable by
-    /// deposit-drain-deposit cycling). Anything beyond 5% cannot move via
-    /// withdrawToken() at all; it has to go through openTreasuryAuction()
-    /// (sell at market, commit-reveal) or proposeVendorPayment() (a fixed
-    /// payment to a named party, requiring a 51% shareholder vote).
     uint256 public constant FREE_TIER_BPS = 500; // 5%
     mapping(uint256 => mapping(uint256 => mapping(address => uint256))) public termTokenSnapshot;
     mapping(uint256 => mapping(uint256 => mapping(address => bool))) public termTokenSnapshotTaken;
     mapping(uint256 => mapping(uint256 => mapping(address => uint256))) public termTokenFreeSpent;
 
-    function _spendFreeAllowance(uint256 companyId, address token, uint256 amount) internal returns (bool ok) {
-        uint256 term = roundAuction.termNumber(companyId);
+    /// @notice How much of `token` the governor can still withdraw freely this term.
+    function freeAllowanceLeft(uint256 companyId, address token) external view returns (uint256) {
+        uint256 term = governance.termNumber(companyId);
+        uint256 base = termTokenSnapshotTaken[companyId][term][token] ? termTokenSnapshot[companyId][term][token] : companyTokenBalance[companyId][token];
+        uint256 cap = (base * FREE_TIER_BPS) / 10_000;
+        uint256 spent = termTokenFreeSpent[companyId][term][token];
+        return spent >= cap ? 0 : cap - spent;
+    }
+
+    function withdrawToken(uint256 companyId, address token, address to, uint256 amount) external onlyGovernor(companyId) {
+        require(companyTokenBalance[companyId][token] >= amount, "CT: insufficient balance");
+        uint256 term = governance.termNumber(companyId);
         if (!termTokenSnapshotTaken[companyId][term][token]) {
             termTokenSnapshot[companyId][term][token] = companyTokenBalance[companyId][token];
             termTokenSnapshotTaken[companyId][term][token] = true;
         }
-        uint256 freeCap = (termTokenSnapshot[companyId][term][token] * FREE_TIER_BPS) / 10_000;
+        uint256 cap = (termTokenSnapshot[companyId][term][token] * FREE_TIER_BPS) / 10_000;
         uint256 spent = termTokenFreeSpent[companyId][term][token];
-        if (spent + amount > freeCap) return false;
+        require(spent + amount <= cap, "CT: over 5% free allowance");
         termTokenFreeSpent[companyId][term][token] = spent + amount;
-        return true;
-    }
-
-    /// @notice Governor-only, and ONLY within the 5% free tier for this
-    /// asset this term. This is deliberately the one function that can
-    /// send company funds to an address the governor alone picked -- which
-    /// is why it's capped instead of open-ended the way the original
-    /// version of this function was.
-    function withdrawToken(uint256 companyId, address token, address to, uint256 amount) external onlyGovernor(companyId) {
-        require(companyTokenBalance[companyId][token] >= amount, "CompanyTreasury: insufficient balance");
-        require(_spendFreeAllowance(companyId, token, amount), "CompanyTreasury: exceeds 5% free allowance this term - use openTreasuryAuction or proposeVendorPayment");
         companyTokenBalance[companyId][token] -= amount;
         IERC20(token).safeTransfer(to, amount);
         emit TokenWithdrawn(companyId, token, to, amount);
     }
 
     // ---------------------------------------------------------------------
-    // Path 1 above 5%: sell at market via commit-reveal. The governor
-    // never learns who's bidding what until after bidding closes, and
-    // settlement is fully permissionless -- no governor signature is
-    // involved anywhere in settlement, which is the actual fix for
-    // "governor picks who wins."
+    // Above 5%, path 1: sealed-bid treasury auction (commit, reveal, settle)
     // ---------------------------------------------------------------------
 
     uint256 public bidDepositAmount = 10 * 10 ** 18;
-    /// @notice Same class of protection as MAX_BIDS on RoundAuction/ShareAuction
-    /// -- found missing here during a self-audit pass. Without this,
-    /// settleTreasuryAuction()'s two loops over every committed bidder
-    /// could grow expensive enough to exceed a block's gas limit,
-    /// permanently blocking settlement -- which would lock both the asset
-    /// being auctioned AND every bidder's escrowed deposit/revealed
-    /// amount, with no recovery path, exactly the failure mode the
-    /// original MAX_BIDS fix was written to prevent elsewhere.
-    uint256 public constant MAX_BIDDERS = 500;
     uint256 public constant COMMIT_WINDOW = 2 days;
     uint256 public constant REVEAL_WINDOW = 1 days;
 
@@ -171,125 +146,125 @@ contract CompanyTreasury is Ownable {
         uint256 amount;
         uint256 commitEnd;
         uint256 revealEnd;
+        uint256 deposit;         // fixed per auction when it opens
+        uint256 committed;       // number of commits
+        uint256 revealed;        // number of valid reveals
+        address leader;          // highest revealed bid so far (earliest wins ties)
+        uint256 leadingAmount;
         bool settled;
     }
     struct SealedBid {
         bytes32 commitHash;
-        uint256 deposit;
         bool revealed;
         uint256 revealedAmount;
+        bool claimed;
     }
     mapping(uint256 => TreasuryAuction) public treasuryAuctions;
     mapping(uint256 => mapping(address => SealedBid)) public treasuryBids;
-    mapping(uint256 => address[]) public treasuryBidders;
     uint256 public nextTreasuryAuctionId;
 
     event TreasuryAuctionOpened(uint256 indexed auctionId, uint256 indexed companyId, address token, uint256 amount, uint256 commitEnd, uint256 revealEnd);
     event BidCommitted(uint256 indexed auctionId, address indexed bidder);
     event BidRevealed(uint256 indexed auctionId, address indexed bidder, uint256 amount);
     event TreasuryAuctionSettled(uint256 indexed auctionId, address winner, uint256 winningAmount);
+    event TreasuryAuctionClaimed(uint256 indexed auctionId, address indexed bidder, uint256 investReturned, bool wonTokens);
+
+    /// @notice The hash a bidder commits to. The site computes this; it is
+    /// bound to the auction and the bidder so a commit can't be reused.
+    function commitHashFor(uint256 auctionId, uint256 amount, bytes32 salt, address bidder) public pure returns (bytes32) {
+        return keccak256(abi.encode(auctionId, amount, salt, bidder));
+    }
 
     function openTreasuryAuction(uint256 companyId, address token, uint256 amount) external onlyGovernor(companyId) returns (uint256 auctionId) {
-        require(amount > 0, "CompanyTreasury: amount must be > 0");
-        require(companyTokenBalance[companyId][token] >= amount, "CompanyTreasury: insufficient balance");
+        require(amount > 0, "CT: amount must be > 0");
+        require(companyTokenBalance[companyId][token] >= amount, "CT: insufficient balance");
         companyTokenBalance[companyId][token] -= amount; // reserved until settled
         auctionId = nextTreasuryAuctionId++;
         uint256 commitEnd = block.timestamp + COMMIT_WINDOW;
-        uint256 revealEnd = commitEnd + REVEAL_WINDOW;
-        treasuryAuctions[auctionId] = TreasuryAuction(companyId, token, amount, commitEnd, revealEnd, false);
-        emit TreasuryAuctionOpened(auctionId, companyId, token, amount, commitEnd, revealEnd);
+        TreasuryAuction storage a = treasuryAuctions[auctionId];
+        a.companyId = companyId;
+        a.token = token;
+        a.amount = amount;
+        a.commitEnd = commitEnd;
+        a.revealEnd = commitEnd + REVEAL_WINDOW;
+        a.deposit = bidDepositAmount;
+        emit TreasuryAuctionOpened(auctionId, companyId, token, amount, commitEnd, a.revealEnd);
     }
 
-    /// @notice Locks a small refundable-if-honest deposit against a sealed
-    /// bid. The bid amount itself stays hidden until revealBid().
     function commitBid(uint256 auctionId, bytes32 commitHash) external {
         TreasuryAuction storage a = treasuryAuctions[auctionId];
-        require(block.timestamp < a.commitEnd, "CompanyTreasury: commit window closed");
-        require(treasuryBidders[auctionId].length < MAX_BIDDERS, "CompanyTreasury: bidder cap reached for this auction");
-        require(treasuryBids[auctionId][msg.sender].commitHash == bytes32(0), "CompanyTreasury: already committed");
-        investToken.transferFrom(msg.sender, address(this), bidDepositAmount);
-        treasuryBids[auctionId][msg.sender] = SealedBid(commitHash, bidDepositAmount, false, 0);
-        treasuryBidders[auctionId].push(msg.sender);
+        require(block.timestamp < a.commitEnd, "CT: commit window closed");
+        require(commitHash != bytes32(0), "CT: empty commit");
+        require(treasuryBids[auctionId][msg.sender].commitHash == bytes32(0), "CT: already committed");
+        investToken.transferFrom(msg.sender, address(this), a.deposit);
+        treasuryBids[auctionId][msg.sender].commitHash = commitHash;
+        a.committed++;
         emit BidCommitted(auctionId, msg.sender);
     }
 
-    /// @notice Reveals a bid by proving the pre-image of the committed hash
-    /// (recommended: keccak256(abi.encodePacked(amount, salt, msg.sender)))
-    /// and simultaneously escrows the full revealed amount, so settlement
-    /// never depends on a revealed bidder still having funds later.
     function revealBid(uint256 auctionId, uint256 amount, bytes32 salt) external {
         TreasuryAuction storage a = treasuryAuctions[auctionId];
-        require(block.timestamp >= a.commitEnd && block.timestamp < a.revealEnd, "CompanyTreasury: not reveal window");
+        require(block.timestamp >= a.commitEnd && block.timestamp < a.revealEnd, "CT: not reveal window");
         SealedBid storage b = treasuryBids[auctionId][msg.sender];
-        require(b.commitHash != bytes32(0), "CompanyTreasury: no commit found");
-        require(!b.revealed, "CompanyTreasury: already revealed");
-        require(keccak256(abi.encodePacked(amount, salt, msg.sender)) == b.commitHash, "CompanyTreasury: hash mismatch");
+        require(b.commitHash != bytes32(0), "CT: no commit found");
+        require(!b.revealed, "CT: already revealed");
+        require(amount > 0, "CT: zero bid");
+        require(commitHashFor(auctionId, amount, salt, msg.sender) == b.commitHash, "CT: hash mismatch");
+        investToken.transferFrom(msg.sender, address(this), amount);
         b.revealed = true;
         b.revealedAmount = amount;
-        investToken.transferFrom(msg.sender, address(this), amount);
+        a.revealed++;
+        if (amount > a.leadingAmount) {
+            a.leader = msg.sender;
+            a.leadingAmount = amount;
+        }
         emit BidRevealed(auctionId, msg.sender, amount);
     }
 
-    /// @notice Fully permissionless -- anyone can trigger settlement, no
-    /// governor signature involved. Highest revealed bid wins;
-    /// non-revealers forfeit their deposit to the company; losing revealed
-    /// bidders get a full refund; if nobody reveals validly, the asset
-    /// simply returns to the company's spendable balance, unsold.
+    /// @notice Permissionless after the reveal window. Constant cost: pays
+    /// the winning bid and every forfeited deposit (commits never revealed)
+    /// into the company's capital. Bidders then claim individually.
     function settleTreasuryAuction(uint256 auctionId) external {
         TreasuryAuction storage a = treasuryAuctions[auctionId];
-        require(block.timestamp >= a.revealEnd, "CompanyTreasury: reveal window still open");
-        require(!a.settled, "CompanyTreasury: already settled");
+        require(a.revealEnd > 0, "CT: unknown auction");
+        require(block.timestamp >= a.revealEnd, "CT: reveal window still open");
+        require(!a.settled, "CT: already settled");
         a.settled = true;
-
-        address[] storage bidders = treasuryBidders[auctionId];
-        address winner = address(0);
-        uint256 winningAmount = 0;
-        for (uint256 i = 0; i < bidders.length; i++) {
-            SealedBid storage b = treasuryBids[auctionId][bidders[i]];
-            if (b.revealed && b.revealedAmount > winningAmount) {
-                winner = bidders[i];
-                winningAmount = b.revealedAmount;
-            }
+        uint256 toCapital = (a.committed - a.revealed) * a.deposit + a.leadingAmount;
+        if (toCapital > 0) _creditCapital(a.companyId, toCapital);
+        if (a.leader == address(0)) {
+            companyTokenBalance[a.companyId][a.token] += a.amount; // unsold: back to the company
         }
+        emit TreasuryAuctionSettled(auctionId, a.leader, a.leadingAmount);
+    }
 
-        for (uint256 i = 0; i < bidders.length; i++) {
-            address bidder = bidders[i];
-            SealedBid storage b = treasuryBids[auctionId][bidder];
-            if (!b.revealed) {
-                // Forfeited deposit: this contract already holds it (from
-                // commitBid's transferFrom), so forward it into
-                // RoundAuction before crediting capital there -- adjustCapital's
-                // positive branch requires the real tokens to have already
-                // arrived in the same transaction.
-                investToken.transfer(address(roundAuction), b.deposit);
-                roundAuction.adjustCapital(a.companyId, int256(b.deposit)); // forfeited
-            } else if (bidder == winner) {
-                investToken.transfer(bidder, b.deposit); // deposit returned; bid amount is the payment
-            } else {
-                investToken.transfer(bidder, b.deposit + b.revealedAmount); // full refund
-            }
-        }
+    /// @notice After settlement: the winner gets the auctioned tokens and
+    /// their deposit back; every other revealed bidder gets deposit + bid.
+    function claimTreasuryAuction(uint256 auctionId) external {
+        TreasuryAuction storage a = treasuryAuctions[auctionId];
+        require(a.settled, "CT: not settled");
+        SealedBid storage b = treasuryBids[auctionId][msg.sender];
+        require(b.revealed, "CT: nothing to claim");
+        require(!b.claimed, "CT: already claimed");
+        b.claimed = true;
+        bool won = msg.sender == a.leader;
+        uint256 back = won ? a.deposit : a.deposit + b.revealedAmount;
+        investToken.transfer(msg.sender, back);
+        if (won) IERC20(a.token).safeTransfer(msg.sender, a.amount);
+        emit TreasuryAuctionClaimed(auctionId, msg.sender, back, won);
+    }
 
-        if (winner != address(0)) {
-            // Same forwarding requirement: this contract already holds the
-            // winner's revealed bid amount (from revealBid's transferFrom).
-            investToken.transfer(address(roundAuction), winningAmount);
-            roundAuction.adjustCapital(a.companyId, int256(winningAmount));
-            IERC20(a.token).safeTransfer(winner, a.amount);
-        } else {
-            companyTokenBalance[a.companyId][a.token] += a.amount; // unsold, return the reservation
-        }
-        emit TreasuryAuctionSettled(auctionId, winner, winningAmount);
+    function setBidDepositAmount(uint256 amount) external onlyOwner {
+        bidDepositAmount = amount; // applies to auctions opened afterwards
     }
 
     // ---------------------------------------------------------------------
-    // Path 2 above 5%: a fixed payment to a named party, requiring 51%
-    // shareholder approval instead of a market mechanism -- for real-world
-    // invoices an auction can't express.
+    // Above 5%, path 2: vendor payment approved by shareholders
     // ---------------------------------------------------------------------
 
     uint256 public constant VENDOR_VOTE_WINDOW = 3 days;
-    uint256 public constant ELECTION_THRESHOLD_BPS = 5100; // 51%, same bar as electing a governor
+    uint256 public constant APPROVAL_THRESHOLD_BPS = 5100; // 51% of votes cast
+    uint256 public constant VENDOR_QUORUM_BPS = 2000;      // 20% of issued shares must vote
 
     struct VendorPayment {
         uint256 companyId;
@@ -297,6 +272,7 @@ contract CompanyTreasury is Ownable {
         address to;
         uint256 amount;
         uint256 voteEnd;
+        uint256 snapshot;
         uint256 yesWeight;
         uint256 noWeight;
         bool executed;
@@ -310,146 +286,123 @@ contract CompanyTreasury is Ownable {
     event VendorPaymentExecuted(uint256 indexed paymentId, bool approved);
 
     function proposeVendorPayment(uint256 companyId, address token, address to, uint256 amount) external onlyGovernor(companyId) returns (uint256 paymentId) {
-        require(amount > 0, "CompanyTreasury: amount must be > 0");
-        require(companyTokenBalance[companyId][token] >= amount, "CompanyTreasury: insufficient balance");
+        require(amount > 0, "CT: amount must be > 0");
+        require(to != address(0), "CT: zero address");
+        require(companyTokenBalance[companyId][token] >= amount, "CT: insufficient balance");
         companyTokenBalance[companyId][token] -= amount; // reserved until the vote resolves
         paymentId = nextVendorPaymentId++;
-        uint256 voteEnd = block.timestamp + VENDOR_VOTE_WINDOW;
-        vendorPayments[paymentId] = VendorPayment(companyId, token, to, amount, voteEnd, 0, 0, false);
+        vendorPayments[paymentId] = VendorPayment(companyId, token, to, amount, block.timestamp + VENDOR_VOTE_WINDOW, block.timestamp - 1, 0, 0, false);
         emit VendorPaymentProposed(paymentId, companyId, token, to, amount);
     }
 
     function voteVendorPayment(uint256 paymentId, bool approve) external {
         VendorPayment storage p = vendorPayments[paymentId];
-        require(block.timestamp < p.voteEnd, "CompanyTreasury: voting closed");
-        require(!vendorPaymentVoted[paymentId][msg.sender], "CompanyTreasury: already voted");
-        uint256 weight = _companyShares(p.companyId, msg.sender);
-        require(weight > 0, "CompanyTreasury: not a shareholder");
+        require(block.timestamp < p.voteEnd, "CT: voting closed");
+        require(!vendorPaymentVoted[paymentId][msg.sender], "CT: already voted");
+        uint256 weight = roundAuction.shareCountAt(p.companyId, msg.sender, p.snapshot);
+        require(weight > 0, "CT: no shares at snapshot");
         vendorPaymentVoted[paymentId][msg.sender] = true;
-        if (approve) {
-            p.yesWeight += weight;
-        } else {
-            p.noWeight += weight;
-        }
+        if (approve) p.yesWeight += weight; else p.noWeight += weight;
         emit VendorPaymentVoted(paymentId, msg.sender, approve, weight);
+    }
+
+    /// @notice True if, right now, the vote would pass (quorum met and 51% yes).
+    function vendorPaymentPasses(uint256 paymentId) public view returns (bool) {
+        VendorPayment storage p = vendorPayments[paymentId];
+        uint256 total = p.yesWeight + p.noWeight;
+        uint256 issued = roundAuction.sharesIssuedAt(p.companyId, p.snapshot);
+        return total > 0
+            && total * 10_000 >= issued * VENDOR_QUORUM_BPS
+            && p.yesWeight * 10_000 >= total * APPROVAL_THRESHOLD_BPS;
     }
 
     function executeVendorPayment(uint256 paymentId) external {
         VendorPayment storage p = vendorPayments[paymentId];
-        require(block.timestamp >= p.voteEnd, "CompanyTreasury: voting still open");
-        require(!p.executed, "CompanyTreasury: already executed");
+        require(p.voteEnd > 0, "CT: unknown payment");
+        require(block.timestamp >= p.voteEnd, "CT: voting still open");
+        require(!p.executed, "CT: already executed");
         p.executed = true;
-        uint256 total = p.yesWeight + p.noWeight;
-        bool approved = total > 0 && p.yesWeight * 10_000 >= total * ELECTION_THRESHOLD_BPS;
+        bool approved = vendorPaymentPasses(paymentId);
         if (approved) {
             IERC20(p.token).safeTransfer(p.to, p.amount);
         } else {
-            companyTokenBalance[p.companyId][p.token] += p.amount; // rejected, return the reservation
+            companyTokenBalance[p.companyId][p.token] += p.amount;
         }
         emit VendorPaymentExecuted(paymentId, approved);
     }
 
-    function setBidDepositAmount(uint256 amount) external onlyOwner {
-        bidDepositAmount = amount;
-    }
-
     // ---------------------------------------------------------------------
-    // Mandatory end-of-term policy vote: 1% dividend, or reinvest.
-    // Separate from -- and in addition to -- anything the sitting governor
-    // chose to do with distribute() during their own term.
+    // End-of-term dividend vote (the only dividend path since v6)
+    // Record date = the moment the term ended.
     // ---------------------------------------------------------------------
 
     uint256 public constant POLICY_VOTE_WINDOW = 3 days;
-    uint256 public constant TERM_END_DIVIDEND_BPS = 100; // 1%
+    uint256 public constant TERM_END_DIVIDEND_BPS = 100; // 1% of capital
     mapping(uint256 => mapping(uint256 => uint256)) public policyVoteEnd;
+    mapping(uint256 => mapping(uint256 => uint256)) public policyRecordDate;
     mapping(uint256 => mapping(uint256 => bool)) public policyResolved;
     mapping(uint256 => mapping(uint256 => mapping(address => bool))) public policyHasVoted;
     mapping(uint256 => mapping(uint256 => uint256)) public policyDividendWeight;
     mapping(uint256 => mapping(uint256 => uint256)) public policyReinvestWeight;
+    mapping(uint256 => mapping(uint256 => uint256)) public dividendPerShare; // scaled by 1e18
+    mapping(uint256 => mapping(uint256 => uint256)) public dividendRemaining; // INVEST not yet claimed
+    mapping(uint256 => mapping(uint256 => mapping(address => bool))) public claimedDividend;
 
-    event PolicyVoteOpened(uint256 indexed companyId, uint256 indexed term, uint256 voteEnd);
+    event PolicyVoteOpened(uint256 indexed companyId, uint256 indexed term, uint256 voteEnd, uint256 recordDate);
     event PolicyVoted(uint256 indexed companyId, uint256 indexed term, address indexed voter, bool wantsDividend, uint256 weight);
     event PolicyResolved(uint256 indexed companyId, uint256 indexed term, bool distributedDividend, uint256 amount);
     event DividendClaimed(uint256 indexed companyId, uint256 indexed term, address indexed holder, uint256 amount);
 
-    /// @notice Works whether or not RoundAuction.startNewTerm() has already
-    /// reset the live governorTermEnd for a newer term -- RoundAuction
-    /// archives each outgoing term's end time in termEndedAt automatically
-    /// the moment the next governor is installed.
-    function openPolicyVote(uint256 companyId, uint256 term) external {
-        uint256 currentTerm = roundAuction.termNumber(companyId);
-        require(term > 0 && term <= currentTerm, "CompanyTreasury: invalid term");
-        uint256 endedAt = roundAuction.termEndedAt(companyId, term);
-        if (endedAt == 0 && term == currentTerm) {
-            uint256 liveEnd = roundAuction.governorTermEnd(companyId);
-            require(block.timestamp >= liveEnd, "CompanyTreasury: term not over yet");
-            endedAt = liveEnd;
+    /// @notice When `term` ended: from Governance's record, or the live
+    /// term's end time if it has passed but no reset has happened yet.
+    function termEndTime(uint256 companyId, uint256 term) public view returns (uint256) {
+        uint256 current = governance.termNumber(companyId);
+        if (term == 0 || term > current) return 0;
+        uint256 endedAt = governance.termEndedAt(companyId, term);
+        if (endedAt == 0 && term == current) {
+            uint256 liveEnd = governance.governorTermEnd(companyId);
+            if (liveEnd != 0 && block.timestamp >= liveEnd) endedAt = liveEnd;
         }
-        require(endedAt != 0, "CompanyTreasury: term not concluded");
-        require(policyVoteEnd[companyId][term] == 0, "CompanyTreasury: already opened");
-        (, , uint256 sharesIssued, , , , , , ) = roundAuction.companies(companyId);
-        require(sharesIssued > 0, "CompanyTreasury: no shares issued");
+        return endedAt;
+    }
+
+    function openPolicyVote(uint256 companyId, uint256 term) external {
+        uint256 endedAt = termEndTime(companyId, term);
+        require(endedAt != 0, "CT: term not concluded");
+        require(policyVoteEnd[companyId][term] == 0, "CT: already opened");
+        require(roundAuction.sharesIssuedAt(companyId, endedAt) > 0, "CT: no shares issued");
+        policyRecordDate[companyId][term] = endedAt;
         policyVoteEnd[companyId][term] = block.timestamp + POLICY_VOTE_WINDOW;
-        emit PolicyVoteOpened(companyId, term, policyVoteEnd[companyId][term]);
+        emit PolicyVoteOpened(companyId, term, policyVoteEnd[companyId][term], endedAt);
     }
 
     function votePolicy(uint256 companyId, uint256 term, bool wantsDividend) external {
-        require(policyVoteEnd[companyId][term] != 0 && block.timestamp < policyVoteEnd[companyId][term], "CompanyTreasury: voting not open");
-        require(!policyHasVoted[companyId][term][msg.sender], "CompanyTreasury: already voted");
-        uint256 weight = _companyShares(companyId, msg.sender);
-        require(weight > 0, "CompanyTreasury: not a shareholder");
+        uint256 voteEnd = policyVoteEnd[companyId][term];
+        require(voteEnd != 0 && block.timestamp < voteEnd, "CT: voting not open");
+        require(!policyHasVoted[companyId][term][msg.sender], "CT: already voted");
+        uint256 weight = roundAuction.shareCountAt(companyId, msg.sender, policyRecordDate[companyId][term]);
+        require(weight > 0, "CT: no shares at record date");
         policyHasVoted[companyId][term][msg.sender] = true;
-        if (wantsDividend) {
-            policyDividendWeight[companyId][term] += weight;
-        } else {
-            policyReinvestWeight[companyId][term] += weight;
-        }
+        if (wantsDividend) policyDividendWeight[companyId][term] += weight;
+        else policyReinvestWeight[companyId][term] += weight;
         emit PolicyVoted(companyId, term, msg.sender, wantsDividend, weight);
     }
 
-    /// @notice companyId/term => per-share dividend amount, scaled by 1e18
-    /// for integer-division precision. Set once, in resolvePolicyVote().
-    mapping(uint256 => mapping(uint256 => uint256)) public dividendPerShare;
-    mapping(uint256 => mapping(uint256 => mapping(address => bool))) public claimedDividend;
-
-    /// @notice Found during a self-audit pass, replacing an earlier version
-    /// that took a caller-supplied `holders` array and paid each address
-    /// directly in a loop here. That pattern had a real, permanent
-    /// fund-loss bug: `policyResolved` locked to true immediately, so if
-    /// the supplied list was ever incomplete -- by accident or malice --
-    /// the excluded shareholders' portion of the dividend wasn't merely
-    /// delayed, it was gone, since the same 1% was already deducted from
-    /// company capital regardless of who actually got paid.
-    ///
-    /// This version does no per-holder work at all: it only decides
-    /// whether the dividend won, computes a per-share rate, and reserves
-    /// the total amount by deducting it from capital. Every shareholder
-    /// then calls claimDividend() themselves for their own cut, whenever
-    /// they want -- removing both the incomplete-list risk and the
-    /// unbounded-loop gas risk in the same change, since there's no loop
-    /// over holders left in this function at all.
-    ///
-    /// Known, stated tradeoff of the fix: this does not snapshot who held
-    /// shares at the exact moment of resolution. claimDividend() reads
-    /// CURRENT share count at claim time, so a shareholder who transfers
-    /// their shares away before claiming forfeits that term's dividend to
-    /// whichever wallet holds the shares when it's claimed -- the same
-    /// "record date" tradeoff ordinary dividend systems make explicitly,
-    /// here made implicitly by using current ownership. A full historical
-    /// snapshot system would close this too, but is a larger change than
-    /// this pass covers.
     function resolvePolicyVote(uint256 companyId, uint256 term) external {
-        require(policyVoteEnd[companyId][term] != 0, "CompanyTreasury: not opened");
-        require(block.timestamp >= policyVoteEnd[companyId][term], "CompanyTreasury: voting still open");
-        require(!policyResolved[companyId][term], "CompanyTreasury: already resolved");
+        uint256 voteEnd = policyVoteEnd[companyId][term];
+        require(voteEnd != 0, "CT: not opened");
+        require(block.timestamp >= voteEnd, "CT: voting still open");
+        require(!policyResolved[companyId][term], "CT: already resolved");
         policyResolved[companyId][term] = true;
-
         if (policyDividendWeight[companyId][term] > policyReinvestWeight[companyId][term]) {
-            (, , uint256 sharesIssued, , , , , , uint256 capital) = roundAuction.companies(companyId);
+            (, uint256 capital) = _company(companyId);
             uint256 amount = (capital * TERM_END_DIVIDEND_BPS) / 10_000;
-            if (amount > 0 && sharesIssued > 0) {
-                roundAuction.adjustCapital(companyId, -int256(amount));
-                dividendPerShare[companyId][term] = (amount * 1e18) / sharesIssued;
+            uint256 issued = roundAuction.sharesIssuedAt(companyId, policyRecordDate[companyId][term]);
+            uint256 perShare = (amount * 1e18) / issued;
+            if (perShare > 0) {
+                roundAuction.adjustCapital(companyId, -int256(amount)); // real tokens arrive here
+                dividendPerShare[companyId][term] = perShare;
+                dividendRemaining[companyId][term] = amount;
                 emit PolicyResolved(companyId, term, true, amount);
                 return;
             }
@@ -457,63 +410,38 @@ contract CompanyTreasury is Ownable {
         emit PolicyResolved(companyId, term, false, 0);
     }
 
-    /// @notice Any shareholder claims their own cut of a resolved
-    /// dividend, based on their CURRENT share count -- see the tradeoff
-    /// noted on resolvePolicyVote() above. Small rounding dust from the
-    /// integer division may remain unclaimed in aggregate; this is a
-    /// negligible, bounded amount, not a fund-loss risk like the pattern
-    /// this replaced.
-    function claimDividend(uint256 companyId, uint256 term) external {
-        require(policyResolved[companyId][term], "CompanyTreasury: not resolved");
-        require(!claimedDividend[companyId][term][msg.sender], "CompanyTreasury: already claimed");
-        uint256 rate = dividendPerShare[companyId][term];
-        require(rate > 0, "CompanyTreasury: no dividend this term");
-        uint256 held = _companyShares(companyId, msg.sender);
-        require(held > 0, "CompanyTreasury: not a shareholder");
-        uint256 amount = (held * rate) / 1e18;
-        require(amount > 0, "CompanyTreasury: nothing to claim");
-        claimedDividend[companyId][term][msg.sender] = true;
-        investToken.transfer(msg.sender, amount);
-        emit DividendClaimed(companyId, term, msg.sender, amount);
+    /// @notice What `holder` can claim for a term (0 if already claimed).
+    function dividendOwed(uint256 companyId, uint256 term, address holder) public view returns (uint256) {
+        if (!policyResolved[companyId][term] || claimedDividend[companyId][term][holder]) return 0;
+        uint256 held = roundAuction.shareCountAt(companyId, holder, policyRecordDate[companyId][term]);
+        return (held * dividendPerShare[companyId][term]) / 1e18;
     }
 
-    /// @notice The corporate-holding equivalent of claimDividend() -- lets
-    /// a company's governor claim a dividend on behalf of shares their
-    /// organization holds in ANOTHER company (built up via
-    /// RoundAuction.invest()). The corporate holder address has no
-    /// private key to call claimDividend() itself, the same problem
-    /// voteAsCorporation() already solves for governance votes. Unlike an
-    /// ordinary claim, proceeds are never sent to any individual wallet --
-    /// they're credited into the ORIGIN company's reinvestable-income pool
-    /// (RoundAuction.reinvestableIncome), which invest() can later spend.
-    /// This is what makes reinvestment self-sustaining: real income earned
-    /// through a corporate holding flows back to the investing company's
-    /// own pool, never to a person, and never touches that company's
-    /// original citizen-funded capital.
+    function claimDividend(uint256 companyId, uint256 term) external {
+        uint256 amount = _takeDividend(companyId, term, msg.sender);
+        investToken.transfer(msg.sender, amount);
+    }
+
+    /// @notice A governor claims the dividend owed to shares their company
+    /// holds in another company; it becomes that company's reinvestable income.
     function claimDividendAsCorporation(uint256 fromCompanyId, uint256 dividendCompanyId, uint256 term) external onlyGovernor(fromCompanyId) {
-        address corp = roundAuction.corporateHolder(fromCompanyId);
-        require(policyResolved[dividendCompanyId][term], "CompanyTreasury: not resolved");
-        require(!claimedDividend[dividendCompanyId][term][corp], "CompanyTreasury: already claimed");
-        uint256 rate = dividendPerShare[dividendCompanyId][term];
-        require(rate > 0, "CompanyTreasury: no dividend this term");
-        uint256 held = roundAuction.companyShareCount(dividendCompanyId, corp);
-        require(held > 0, "CompanyTreasury: no shares held there");
-        uint256 amount = (held * rate) / 1e18;
-        require(amount > 0, "CompanyTreasury: nothing to claim");
-        claimedDividend[dividendCompanyId][term][corp] = true;
-        // This contract already holds the real tokens backing this
-        // dividend pool -- received automatically when resolvePolicyVote()
-        // called adjustCapital with a negative delta. Forward this specific
-        // claim's share into RoundAuction, then credit it to the ORIGIN
-        // company's reinvestable pool, never to a wallet.
+        uint256 amount = _takeDividend(dividendCompanyId, term, roundAuction.corporateHolder(fromCompanyId));
         investToken.transfer(address(roundAuction), amount);
         roundAuction.addReinvestableIncome(fromCompanyId, amount);
-        emit DividendClaimed(dividendCompanyId, term, corp, amount);
+    }
+
+    function _takeDividend(uint256 companyId, uint256 term, address holder) internal returns (uint256 amount) {
+        require(policyResolved[companyId][term], "CT: not resolved");
+        require(!claimedDividend[companyId][term][holder], "CT: already claimed");
+        amount = dividendOwed(companyId, term, holder);
+        require(amount > 0, "CT: nothing to claim");
+        claimedDividend[companyId][term][holder] = true;
+        dividendRemaining[companyId][term] -= amount; // can't underflow: entitlements sum to <= amount
+        emit DividendClaimed(companyId, term, holder, amount);
     }
 
     // ---------------------------------------------------------------------
-    // INVEST secondary market -- the on-ramp for anyone who wasn't an
-    // original citizen. See InvestToken.sol / README for the full picture.
+    // INVEST secondary market (on-ramp for non-citizens)
     // ---------------------------------------------------------------------
 
     mapping(address => bool) public approvedPaymentTokens;
@@ -536,44 +464,41 @@ contract CompanyTreasury is Ownable {
     event PaymentTokenApprovalSet(address indexed token, bool approved);
 
     function setApprovedPaymentToken(address token, bool approved) external onlyOwner {
-        require(token != address(investToken), "CompanyTreasury: INVEST itself can't be a payment token");
+        require(token != address(investToken), "CT: INVEST can't be a payment token");
         approvedPaymentTokens[token] = approved;
         emit PaymentTokenApprovalSet(token, approved);
     }
 
-    /// @notice A citizen offers some of their own INVEST for sale, escrowed
-    /// here immediately so a buyer can trust the offer is real.
     function offerInvest(uint256 investAmount, address paymentToken, uint256 paymentAmount) external {
-        require(approvedPaymentTokens[paymentToken], "CompanyTreasury: payment token not approved");
-        require(investAmount > 0 && paymentAmount > 0, "CompanyTreasury: amounts must be > 0");
+        require(approvedPaymentTokens[paymentToken], "CT: payment token not approved");
+        require(investAmount > 0 && paymentAmount > 0, "CT: amounts must be > 0");
         investToken.transferFrom(msg.sender, address(this), investAmount);
-        investOffers[nextInvestOfferId] = InvestOffer(msg.sender, investAmount, paymentToken, paymentAmount, true, false, 0);
-        emit InvestOffered(nextInvestOfferId, msg.sender, investAmount, paymentToken, paymentAmount);
-        nextInvestOfferId++;
+        _offer(msg.sender, investAmount, paymentToken, paymentAmount, false, 0);
     }
 
-    /// @notice Governor equivalent: sells down the COMPANY's own held
-    /// INVEST capital for an approved ERC-20, which becomes part of that
-    /// company's token treasury instead of going to any individual.
+    /// @notice A governor sells some of the company's INVEST capital for an
+    /// approved payment token, credited to the company's custody balance.
     function governorOfferInvest(uint256 companyId, uint256 investAmount, address paymentToken, uint256 paymentAmount) external onlyGovernor(companyId) {
-        require(approvedPaymentTokens[paymentToken], "CompanyTreasury: payment token not approved");
-        require(investAmount > 0 && paymentAmount > 0, "CompanyTreasury: amounts must be > 0");
-        (, , , , , , , , uint256 capital) = roundAuction.companies(companyId);
-        require(capital >= investAmount, "CompanyTreasury: insufficient capital");
-        roundAuction.adjustCapital(companyId, -int256(investAmount));
-        address corp = roundAuction.corporateHolder(companyId);
-        investOffers[nextInvestOfferId] = InvestOffer(corp, investAmount, paymentToken, paymentAmount, true, true, companyId);
-        emit InvestOffered(nextInvestOfferId, corp, investAmount, paymentToken, paymentAmount);
+        require(approvedPaymentTokens[paymentToken], "CT: payment token not approved");
+        require(investAmount > 0 && paymentAmount > 0, "CT: amounts must be > 0");
+        roundAuction.adjustCapital(companyId, -int256(investAmount)); // reverts if capital is short
+        _offer(roundAuction.corporateHolder(companyId), investAmount, paymentToken, paymentAmount, true, companyId);
+    }
+
+    function _offer(address seller, uint256 investAmount, address paymentToken, uint256 paymentAmount, bool corp, uint256 creditId) internal {
+        investOffers[nextInvestOfferId] = InvestOffer(seller, investAmount, paymentToken, paymentAmount, true, corp, creditId);
+        emit InvestOffered(nextInvestOfferId, seller, investAmount, paymentToken, paymentAmount);
         nextInvestOfferId++;
     }
 
     function buyInvest(uint256 offerId) external {
         InvestOffer storage o = investOffers[offerId];
-        require(o.active, "CompanyTreasury: not active");
+        require(o.active, "CT: not active");
         o.active = false;
         if (o.isCorporateOffer) {
+            uint256 before = IERC20(o.paymentToken).balanceOf(address(this));
             IERC20(o.paymentToken).safeTransferFrom(msg.sender, address(this), o.paymentAmount);
-            companyTokenBalance[o.creditCompanyId][o.paymentToken] += o.paymentAmount;
+            companyTokenBalance[o.creditCompanyId][o.paymentToken] += IERC20(o.paymentToken).balanceOf(address(this)) - before;
         } else {
             IERC20(o.paymentToken).safeTransferFrom(msg.sender, o.seller, o.paymentAmount);
         }
@@ -583,19 +508,13 @@ contract CompanyTreasury is Ownable {
 
     function cancelInvestOffer(uint256 offerId) external {
         InvestOffer storage o = investOffers[offerId];
-        require(o.active, "CompanyTreasury: not active");
+        require(o.active, "CT: not active");
         o.active = false;
         if (o.isCorporateOffer) {
-            require(msg.sender == roundAuction.governorOperatingKey(o.creditCompanyId), "CompanyTreasury: not the current operating key");
-            // This contract already holds these tokens -- they arrived
-            // automatically when governorOfferInvest() called adjustCapital
-            // with a negative delta, which now pays the real tokens to the
-            // caller (this contract) at that same moment. Forward them back
-            // to RoundAuction before crediting capital there.
-            investToken.transfer(address(roundAuction), o.investAmount);
-            roundAuction.adjustCapital(o.creditCompanyId, int256(o.investAmount));
+            require(msg.sender == governance.governorOperatingKey(o.creditCompanyId), "CT: not operating key");
+            _creditCapital(o.creditCompanyId, o.investAmount);
         } else {
-            require(msg.sender == o.seller, "CompanyTreasury: not seller");
+            require(msg.sender == o.seller, "CT: not seller");
             investToken.transfer(o.seller, o.investAmount);
         }
         emit InvestOfferCancelled(offerId);
