@@ -1,204 +1,135 @@
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, TrendingUp, Clock, RefreshCw } from "lucide-react";
+import { Clock, RefreshCw } from "lucide-react";
 import {
   getListedRoundCompanies,
   getRoundBids,
+  getRoundAuctionRules,
   getRoundInvestAllowance,
   approveInvestForRound,
   placeRoundBid,
   settleRoundReal,
+  parseAmount,
 } from "../web3.js";
 import CompanyGovernance from "./CompanyGovernance.jsx";
+import CompanyTreasury from "./CompanyTreasury.jsx";
+import InvestMarket from "./InvestMarket.jsx";
+import { C, same, fmt, useCountdown, useTx } from "./liveUtils.js";
+import { Button, Input, Muted, ErrorLine } from "./ui.jsx";
 
-function fmtInvest(raw) {
-  return (raw / 10n ** 18n).toLocaleString();
-}
-
-function useCountdown(endSeconds) {
-  const [now, setNow] = useState(Math.floor(Date.now() / 1000));
-  useEffect(() => {
-    const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
-    return () => clearInterval(id);
-  }, []);
-  const remaining = Math.max(0, Number(endSeconds) - now);
-  const closed = remaining <= 0;
-  const h = Math.floor(remaining / 3600);
-  const m = Math.floor((remaining % 3600) / 60);
-  const s = remaining % 60;
-  return { closed, label: `${h}h ${m}m ${s}s` };
-}
-
-function RoundCompanyCard({ company, wallet, onChanged }) {
+function RoundCompanyCard({ company, companies, wallet, rules, onChanged }) {
   const [bids, setBids] = useState(null);
   const [bidAmount, setBidAmount] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const { closed, label } = useCountdown(company.roundEnd);
+  const { busy, error, setError, run } = useTx();
+  const { passed: closed, label } = useCountdown(company.roundEnd);
 
   const loadBids = useCallback(async () => {
-    const b = await getRoundBids(company.id, wallet.provider);
-    setBids(b);
+    setBids(await getRoundBids(company.id, wallet.provider));
   }, [company.id, wallet.provider]);
 
-  useEffect(() => {
-    loadBids();
-  }, [loadBids]);
+  useEffect(() => { loadBids(); }, [loadBids]);
 
-  const activeBids = bids?.filter((b) => b.active) || [];
-  const myActiveBid = activeBids.find((b) => b.bidder.toLowerCase() === wallet.address.toLowerCase());
+  const myBid = bids?.find((b) => same(b.bidder, wallet.address));
   const sharesRemaining = company.totalShares - company.sharesIssued;
+  const lowest = bids && bids.length ? bids.reduce((m, b) => (b.amount < m ? b.amount : m), bids[0].amount) : null;
+  const full = rules && bids && BigInt(bids.length) >= rules.maxActiveBids;
+  const refresh = async () => { await loadBids(); if (onChanged) await onChanged(); };
 
   const handleBid = async () => {
-    setError("");
-    let amountRaw;
-    try {
-      const { parseUnits } = await import("ethers");
-      amountRaw = parseUnits(bidAmount, 18);
-      if (amountRaw <= 0n) throw new Error();
-    } catch {
-      setError("Enter a valid amount of INVEST to bid.");
-      return;
-    }
-    setBusy(true);
-    try {
+    let amount;
+    try { amount = await parseAmount(bidAmount, 18); } catch { setError("Enter how much INVEST to bid, for example 25."); return; }
+    await run(async () => {
       const allowance = await getRoundInvestAllowance(wallet.address, wallet.provider);
-      if (allowance < amountRaw) {
-        // Approving the exact bid amount every time meant every single bid
-        // cost two transactions (approve + bid) instead of one — the
-        // approval consumed by one bid left nothing for the next, so the
-        // very next bid needed a fresh approval all over again, forever.
-        // Approving a large one-time ceiling instead (the standard pattern
-        // most DeFi apps use, including Uniswap) means this is the LAST
-        // approval transaction ever needed — every bid after this one, on
-        // any company, skips straight to the bid itself. Real tradeoff,
-        // stated plainly: this does mean RoundAuction could technically
-        // move up to this ceiling of the wallet's INVEST in one shot if it
-        // were ever compromised, rather than being capped to one bid's
-        // worth at a time. Given INVEST has no value outside this closed
-        // system and the contract is verified/open-source, that's judged
-        // an acceptable tradeoff for cutting real recurring gas cost.
+      if (allowance < amount) {
+        // One-time unlimited approval so every later bid is a single
+        // transaction. INVEST has no value outside this closed system.
         const { MaxUint256 } = await import("ethers");
         await approveInvestForRound(wallet.signer, MaxUint256);
       }
-      await placeRoundBid(wallet.signer, company.id, amountRaw);
+      await placeRoundBid(wallet.signer, company.id, amount);
       setBidAmount("");
-      await loadBids();
-      if (onChanged) onChanged();
-    } catch (err) {
-      setError(err.shortMessage || err.message || "Bid failed.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSettle = async () => {
-    setError("");
-    setBusy(true);
-    try {
-      await settleRoundReal(wallet.signer, company.id);
-      await loadBids();
-      if (onChanged) onChanged();
-    } catch (err) {
-      setError(err.shortMessage || err.message || "Settle failed.");
-    } finally {
-      setBusy(false);
-    }
+    }, refresh);
   };
 
   return (
     <div style={{ background: "rgba(237,230,214,0.05)", border: "1px solid rgba(237,230,214,0.15)", borderRadius: 6, padding: 18, marginBottom: 14 }}>
       <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
         <div className="zilla" style={{ fontWeight: 700, fontSize: 15 }}>{company.name}</div>
-        <div className="mono" style={{ fontSize: 10, opacity: 0.5 }}>ID {company.id} — ROUND {company.currentRound.toString()}</div>
+        <div className="mono" style={{ fontSize: 10, opacity: 0.5 }}>ID {company.id} · ROUND {company.currentRound.toString()}</div>
       </div>
 
-      <div className="mono" style={{ fontSize: 11, opacity: 0.6, marginBottom: 10 }}>
+      <div className="mono" style={{ fontSize: 11, opacity: 0.65, marginBottom: 8 }}>
         {company.finalized
-          ? `Sold out — ${company.sharesIssued.toString()}/${company.totalShares.toString()} shares issued`
-          : `${sharesRemaining.toString()} of ${company.totalShares.toString()} shares remaining`}
+          ? `Sold out: all ${company.totalShares.toLocaleString()} shares issued`
+          : `${company.sharesIssued.toLocaleString()} of ${company.totalShares.toLocaleString()} shares issued · ${sharesRemaining.toLocaleString()} left`}
+        {rules && !company.finalized && ` · up to ${rules.maxSharesPerRound.toString()} sold per round`}
       </div>
 
       {!company.finalized && (
-        <div className="flex items-center gap-1 mono" style={{ fontSize: 11, opacity: 0.7, marginBottom: 12 }}>
-          <Clock size={11} />
-          {closed ? "Round closed — awaiting settlement" : `This round closes in ${label}`}
-        </div>
-      )}
+        <>
+          <div className="flex items-center gap-1 mono" style={{ fontSize: 11, opacity: 0.75, marginBottom: 10 }}>
+            <Clock size={11} />
+            {closed ? "Round closed: settle it to issue shares and open the next round" : `This round closes in ${label}`}
+          </div>
 
-      {bids === null ? (
-        <div className="mono" style={{ fontSize: 11, opacity: 0.5 }}>Loading bid history…</div>
-      ) : !company.finalized ? (
-        <div className="mono" style={{ fontSize: 11, opacity: 0.7, marginBottom: 12 }}>
-          {activeBids.length} active bid{activeBids.length === 1 ? "" : "s"} carrying into this round
-          {myActiveBid && (
-            <span style={{ color: "#C98A3E" }}> — your {fmtInvest(myActiveBid.amount)} INVEST bid is still active</span>
+          {bids === null ? (
+            <Muted>Loading bids…</Muted>
+          ) : (
+            <div className="mono" style={{ fontSize: 11, opacity: 0.8, marginBottom: 10, lineHeight: 1.6 }}>
+              {bids.length}{rules ? ` of ${rules.maxActiveBids.toString()}` : ""} active bids
+              {lowest !== null && ` · lowest ${fmt(lowest)} INVEST (= 1 share)`}
+              {myBid && (
+                <div style={{ color: C.accent }}>
+                  Your bid: {fmt(myBid.amount)} INVEST. If settled now it's worth {((myBid.amount + lowest - 1n) / lowest).toLocaleString()} share
+                  {(myBid.amount + lowest - 1n) / lowest === 1n ? "" : "s"}. It carries into each round until it wins.
+                </div>
+              )}
+            </div>
           )}
-        </div>
-      ) : null}
 
-      {!company.finalized && !closed && !myActiveBid && (
-        <div className="flex gap-2" style={{ marginBottom: 8 }}>
-          <input
-            type="number"
-            value={bidAmount}
-            onChange={(e) => setBidAmount(e.target.value)}
-            placeholder="Amount of INVEST (min. 1)"
-            className="mono"
-            style={{ flex: 1, background: "rgba(237,230,214,0.08)", border: "1px solid rgba(237,230,214,0.2)", borderRadius: 3, padding: "8px 10px", color: "#EDE6D6", fontSize: 12 }}
-          />
-          <button
-            onClick={handleBid}
-            disabled={busy}
-            className="mono flex items-center gap-1"
-            style={{ background: "#C98A3E", color: "#141B18", border: "none", padding: "8px 16px", borderRadius: 3, fontWeight: 700, cursor: "pointer", fontSize: 12 }}
-          >
-            {busy && <Loader2 size={12} className="animate-spin" />}
-            {busy ? "..." : "BID"}
-          </button>
-        </div>
+          {!closed && bids && !myBid && (full ? (
+            <Muted style={{ marginBottom: 8 }}>This company has the maximum {rules.maxActiveBids.toString()} active bids. Bidding reopens after the next settlement.</Muted>
+          ) : (
+            <div className="flex gap-2" style={{ marginBottom: 6 }}>
+              <Input type="number" min="1" value={bidAmount} onChange={(e) => setBidAmount(e.target.value)} placeholder="INVEST to bid (min. 1)" style={{ flex: 1 }} />
+              <Button busy={busy} onClick={handleBid}>Bid</Button>
+            </div>
+          ))}
+          {!closed && bids && !myBid && !full && (
+            <Muted style={{ fontSize: 10.5, marginBottom: 6 }}>
+              One active bid per wallet. The lowest bid sets the price of one share; a bid of 3× the lowest gets 3 shares.
+            </Muted>
+          )}
+
+          {closed && (
+            <Button kind="light" busy={busy} onClick={() => run(() => settleRoundReal(wallet.signer, company.id), refresh)}>Settle this round</Button>
+          )}
+        </>
       )}
 
-      {!company.finalized && !closed && myActiveBid && (
-        <div className="mono" style={{ fontSize: 11, opacity: 0.5, marginBottom: 8 }}>
-          You already have an active bid this cycle — it carries forward automatically until it wins or the company sells out.
-        </div>
-      )}
+      <ErrorLine error={error} />
 
-      {!company.finalized && closed && (
-        <button
-          onClick={handleSettle}
-          disabled={busy}
-          className="mono flex items-center gap-2"
-          style={{ background: "#EDE6D6", color: "#1C1A16", border: "none", padding: "8px 18px", borderRadius: 3, fontWeight: 700, cursor: "pointer", fontSize: 12 }}
-        >
-          {busy && <Loader2 size={12} className="animate-spin" />}
-          {busy ? "SETTLING..." : "SETTLE THIS ROUND"}
-        </button>
-      )}
-
-      {error && <div className="mono" style={{ fontSize: 11, color: "#C97D6F", marginTop: 8 }}>{error}</div>}
-
-      <CompanyGovernance company={company} wallet={wallet} source="RoundAuction" />
+      <CompanyGovernance company={company} wallet={wallet} />
+      <CompanyTreasury company={company} companies={companies} wallet={wallet} onChanged={onChanged} />
     </div>
   );
 }
 
 export default function RealRoundAuctions({ wallet }) {
   const [companies, setCompanies] = useState(null);
+  const [rules, setRules] = useState(null);
   const [loadError, setLoadError] = useState("");
 
   const load = useCallback(async () => {
     try {
-      const list = await getListedRoundCompanies(wallet.provider);
+      const [list, r] = await Promise.all([getListedRoundCompanies(wallet.provider), getRoundAuctionRules(wallet.provider)]);
       setCompanies(list);
+      setRules(r);
     } catch (err) {
-      setLoadError(err.message || "Couldn't load company list.");
+      setLoadError(err.message || "Couldn't load the company list.");
     }
   }, [wallet.provider]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
 
   return (
     <div style={{ marginTop: 32 }}>
@@ -207,23 +138,22 @@ export default function RealRoundAuctions({ wallet }) {
         <div className="zilla" style={{ fontSize: 16, fontWeight: 700 }}>Round Auctions</div>
       </div>
       <div className="mono" style={{ fontSize: 10.5, opacity: 0.5, marginBottom: 14, lineHeight: 1.5 }}>
-        A second auction mechanic — proportional to commitment, not winner-take-all. Losing bids carry
-        forward automatically into the next round rather than needing to be replaced.
+        Shares are sold in rounds, in proportion to what each bidder commits. Bids that don't win carry
+        forward into the next round automatically. Once half a company's shares are issued, its
+        shareholders elect a governor and govern its treasury.
       </div>
 
-      {loadError && <div className="mono" style={{ fontSize: 12, color: "#C97D6F" }}>{loadError}</div>}
+      {loadError && <ErrorLine error={loadError} />}
 
       {companies === null ? (
-        <div className="mono" style={{ fontSize: 12, opacity: 0.5 }}>Reading listed companies from chain…</div>
+        !loadError && <Muted>Reading listed companies from chain…</Muted>
       ) : companies.length === 0 ? (
-        <div className="mono" style={{ fontSize: 12, opacity: 0.5, lineHeight: 1.6 }}>
-          No companies listed yet on this contract.
-        </div>
+        <Muted>No companies listed yet on this contract.</Muted>
       ) : (
-        companies.map((c) => (
-          <RoundCompanyCard key={c.id} company={c} wallet={wallet} onChanged={load} />
-        ))
+        companies.map((c) => <RoundCompanyCard key={c.id} company={c} companies={companies} wallet={wallet} rules={rules} onChanged={load} />)
       )}
+
+      {companies && <InvestMarket wallet={wallet} companies={companies} />}
     </div>
   );
 }

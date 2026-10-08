@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
-import { Landmark, Clock, KeyRound, AlertTriangle } from "lucide-react";
+import { Landmark, Clock, KeyRound, Users } from "lucide-react";
 import {
   getCompanyGovernance,
   getCandidates,
   getMyShareCount,
+  getMyVoteWeight,
+  getElectionRules,
   hasVotedThisRound,
   declareCandidacyReal,
   openGovernanceVoteReal,
@@ -14,37 +16,23 @@ import {
   getEthBalance,
   normalizeAddress,
 } from "../web3.js";
+import { C, ZERO, short, same, useCountdown, useTx, count } from "./liveUtils.js";
+import { Button, Input, Notice, Muted, ErrorLine, Section } from "./ui.jsx";
 
-const ZERO = "0x0000000000000000000000000000000000000000";
 // Below this, an operating key probably can't pay for even one transaction.
 const LOW_GAS_WEI = 200000000000000n; // 0.0002 ETH
-
-const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 const fmtEth = (wei) => (Number(wei) / 1e18).toFixed(5);
-const same = (a, b) => a && b && a.toLowerCase() === b.toLowerCase();
+const PROGRAM_PREVIEW = 320; // characters shown before "Read full program"
+const MAX_PROGRAM_BYTES = 4500;
 
-function useCountdown(endSeconds) {
-  const [now, setNow] = useState(Math.floor(Date.now() / 1000));
-  useEffect(() => {
-    const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
-    return () => clearInterval(id);
-  }, []);
-  const remaining = Math.max(0, Number(endSeconds) - now);
-  const passed = remaining <= 0 && Number(endSeconds) > 0;
-  const d = Math.floor(remaining / 86400);
-  const h = Math.floor((remaining % 86400) / 3600);
-  const m = Math.floor((remaining % 3600) / 60);
-  const s = remaining % 60;
-  return { passed, label: d > 0 ? `${d}d ${h}h ${m}m` : `${h}h ${m}m ${s}s` };
+function pct(part, whole) {
+  if (!whole || whole === 0n) return "0%";
+  const bp = Number((part * 10000n) / whole);
+  return `${(bp / 100).toFixed(bp < 100 ? 2 : 1)}%`;
 }
 
-const btnPrimary = { background: "#C98A3E", color: "#141B18", border: "none", padding: "6px 14px", borderRadius: 3, fontWeight: 700, fontSize: 11, cursor: "pointer" };
-const btnLight = { background: "#EDE6D6", color: "#1C1A16", border: "none", padding: "8px 16px", borderRadius: 3, fontWeight: 700, fontSize: 12, cursor: "pointer" };
-const inputStyle = { width: "100%", background: "rgba(237,230,214,0.08)", border: "1px solid rgba(237,230,214,0.2)", borderRadius: 3, padding: 8, color: "#EDE6D6", fontSize: 11, marginBottom: 6 };
-const noticeBox = (color) => ({ background: `${color}1A`, border: `1px solid ${color}`, borderRadius: 4, padding: 12, marginBottom: 10 });
-
 // The governor registers a second MetaMask account as this term's
-// operating key. Only its ADDRESS is ever entered here — no private key
+// operating key. Only its ADDRESS is ever entered here: no private key
 // is shown, copied or typed into the site at any point.
 function OperatingKeyForm({ governor, companyName, busy, onSubmit, submitLabel }) {
   const [input, setInput] = useState("");
@@ -69,272 +57,274 @@ function OperatingKeyForm({ governor, companyName, busy, onSubmit, submitLabel }
         <li>Send that account a little ETH on Arbitrum One to pay for gas. 0.001 ETH is plenty for a term.</li>
         <li>Switch MetaMask back to this governor account, then register below.</li>
       </ol>
-      <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="0x… address of the new account" className="mono" style={inputStyle} />
-      {problem && <div className="mono" style={{ fontSize: 11, color: "#C97D6F", marginBottom: 6 }}>{problem}</div>}
-      <button onClick={submit} disabled={busy || !input.trim()} className="mono" style={btnPrimary}>
-        {busy ? "..." : submitLabel}
-      </button>
+      <Input value={input} onChange={(e) => setInput(e.target.value)} placeholder="0x… address of the new account" style={{ marginBottom: 6 }} />
+      {problem && <div className="mono" style={{ fontSize: 11, color: C.danger, marginBottom: 6 }}>{problem}</div>}
+      <Button onClick={submit} busy={busy} disabled={!input.trim()}>{submitLabel}</Button>
     </div>
   );
 }
 
-export default function CompanyGovernance({ company, wallet, source = "ShareAuction" }) {
+// One candidate, with their program readable before anyone votes.
+function CandidateCard({ c, wallet, sharesIssued, showVotes, totalVotes, children }) {
+  const [open, setOpen] = useState(false);
+  const program = c.program || "";
+  const long = program.length > PROGRAM_PREVIEW;
+  const shown = open || !long ? program : program.slice(0, PROGRAM_PREVIEW).trimEnd() + "…";
+  return (
+    <div style={{ border: `1px solid ${c.eliminated ? "rgba(237,230,214,0.08)" : "rgba(237,230,214,0.18)"}`, borderRadius: 4, padding: 12, marginBottom: 8, opacity: c.eliminated ? 0.5 : 1 }}>
+      <div className="flex items-start justify-between gap-3" style={{ marginBottom: 8 }}>
+        <div className="mono" style={{ fontSize: 11.5 }}>
+          <div style={{ fontWeight: 700 }}>{short(c.address)}{same(c.address, wallet.address) && " (you)"}</div>
+          <div style={{ opacity: 0.6, fontSize: 10.5, marginTop: 2 }}>
+            holds {count(c.stake, "share")} ({pct(c.stake, sharesIssued)})
+            {c.eliminated && " · out of the running"}
+          </div>
+          {showVotes && !c.eliminated && (
+            <div style={{ color: C.accent, fontSize: 10.5, marginTop: 2 }}>
+              {count(c.votes, "vote")}{totalVotes > 0n ? ` (${pct(c.votes, totalVotes)} of votes cast)` : ""}
+            </div>
+          )}
+        </div>
+        {children}
+      </div>
+      <div style={{ fontSize: 12.5, lineHeight: 1.6, whiteSpace: "pre-wrap", opacity: program ? 0.9 : 0.5 }}>
+        {program ? shown : "This candidate didn't write a program."}
+      </div>
+      {long && (
+        <button onClick={() => setOpen(!open)} className="mono" style={{ background: "none", border: "none", color: C.accent, fontSize: 10.5, cursor: "pointer", padding: 0, marginTop: 6 }}>
+          {open ? "Show less" : "Read full program"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function CandidacyForm({ company, wallet, myShares, rules, candidateCount, onDone }) {
+  const [program, setProgram] = useState("");
+  const { busy, error, run } = useTx();
+  const bytes = new TextEncoder().encode(program).length;
+
+  // Minimum stake: 0.1% of the shares issued so far (Governance only).
+  const minStake = rules ? (company.sharesIssued * rules.minStakeBps + 9999n) / 10000n : 0n;
+  const full = rules && BigInt(candidateCount) >= rules.maxCandidates;
+
+  if (full) return <Muted style={{ marginBottom: 10 }}>All {rules.maxCandidates.toString()} candidate places are taken for this election.</Muted>;
+  if (rules && myShares < minStake) {
+    return (
+      <Muted style={{ marginBottom: 10 }}>
+        To stand as a candidate you need at least {count(minStake, "share")} (0.1% of the {company.sharesIssued.toLocaleString()} issued).
+        You hold {myShares.toLocaleString()}.
+      </Muted>
+    );
+  }
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div className="mono" style={{ fontSize: 11, marginBottom: 6 }}>Stand for governor. Tell shareholders what you'll do with the company:</div>
+      <textarea
+        value={program}
+        onChange={(e) => setProgram(e.target.value)}
+        placeholder="Your program: priorities, how you'd use the treasury, dividends or reinvestment…"
+        className="mono"
+        style={{ width: "100%", minHeight: 90, background: "rgba(237,230,214,0.08)", border: "1px solid rgba(237,230,214,0.2)", borderRadius: 3, padding: 8, color: C.text, fontSize: 11.5, lineHeight: 1.5 }}
+      />
+      <div className="mono flex justify-between items-center" style={{ fontSize: 10.5, margin: "4px 0 8px" }}>
+        <span style={{ color: bytes > MAX_PROGRAM_BYTES ? C.danger : undefined, opacity: bytes > MAX_PROGRAM_BYTES ? 1 : 0.5 }}>
+          {bytes.toLocaleString()} / {MAX_PROGRAM_BYTES.toLocaleString()} bytes (about 700 words). It can't be edited after you declare.
+        </span>
+      </div>
+      <Button busy={busy} disabled={!program.trim() || bytes > MAX_PROGRAM_BYTES} onClick={() => run(() => declareCandidacyReal(wallet.signer, company.id, program), onDone)}>
+        Declare candidacy
+      </Button>
+      <ErrorLine error={error} />
+    </div>
+  );
+}
+
+export default function CompanyGovernance({ company, wallet }) {
   const [gov, setGov] = useState(null);
   const [candidates, setCandidates] = useState(null);
   const [myShares, setMyShares] = useState(0n);
+  const [myWeight, setMyWeight] = useState(0n);
   const [myVoted, setMyVoted] = useState(false);
   const [keyBalance, setKeyBalance] = useState(null);
-  const [program, setProgram] = useState("");
-  const [openProgram, setOpenProgram] = useState(null);
+  const [rules, setRules] = useState(null);
   const [showReplace, setShowReplace] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const { busy, error, run } = useTx();
 
-  // RoundAuction opens governance once half the shares are assigned, sold
-  // out or not. The older ShareAuction screen additionally waited for the
-  // auction to finish, so that rule is kept for it.
-  const halfAssigned = company.sharesIssued * 2n >= company.totalShares;
-  const eligible = source === "RoundAuction" ? halfAssigned : company.finalized && halfAssigned;
+  // Elections open once half the shares are issued, sold out or not.
+  const eligible = company.sharesIssued * 2n >= company.totalShares;
 
   const load = useCallback(async () => {
-    // Skip all chain reads until governance can actually open — candidate
-    // lookup scans event logs, which is expensive to repeat on every card.
     if (!eligible) return;
-    const [g, c, shares] = await Promise.all([
-      getCompanyGovernance(company.id, wallet.provider, source),
-      getCandidates(company.id, wallet.provider, source),
-      getMyShareCount(company.id, wallet.address, wallet.provider, source),
-    ]);
-    setGov(g);
-    setCandidates(c);
-    setMyShares(shares);
-    setMyVoted(g.round > 0n ? await hasVotedThisRound(company.id, g.round, wallet.address, wallet.provider, source) : false);
-    setKeyBalance(g.operatingKey !== ZERO ? await getEthBalance(g.operatingKey, wallet.provider) : null);
-  }, [company.id, wallet, source, eligible]);
+    try {
+      const [g, c, shares, r] = await Promise.all([
+        getCompanyGovernance(company.id, wallet.provider),
+        getCandidates(company.id, wallet.provider),
+        getMyShareCount(company.id, wallet.address, wallet.provider),
+        getElectionRules(wallet.provider),
+      ]);
+      const [weight, voted, keyBal] = await Promise.all([
+        getMyVoteWeight(company.id, wallet.address, g, wallet.provider),
+        g.round > 0n ? hasVotedThisRound(company.id, g.round, wallet.address, wallet.provider) : Promise.resolve(false),
+        g.operatingKey !== ZERO ? getEthBalance(g.operatingKey, wallet.provider) : Promise.resolve(null),
+      ]);
+      setGov(g); setCandidates(c); setMyShares(shares); setRules(r);
+      setMyWeight(weight); setMyVoted(voted); setKeyBalance(keyBal);
+      setLoadError("");
+    } catch (err) {
+      setLoadError(err.shortMessage || err.message || "Couldn't read governance state.");
+    }
+  }, [company.id, wallet, eligible]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
 
   const votingCountdown = useCountdown(gov?.voteEnd ?? 0n);
   const termCountdown = useCountdown(gov?.termEnd ?? 0n);
 
   if (!eligible) {
     return (
-      <div className="mono" style={{ fontSize: 11, opacity: 0.5, marginTop: 10 }}>
-        Governance opens once at least half this company's shares are assigned
-        ({company.sharesIssued.toString()} of {company.totalShares.toString()} so far).
-      </div>
+      <Section icon={Landmark} title="Governance">
+        <Muted>
+          Elections open once at least half this company's shares are issued
+          ({company.sharesIssued.toLocaleString()} of {company.totalShares.toLocaleString()} so far).
+        </Muted>
+      </Section>
     );
   }
   if (gov === null) {
-    return <div className="mono" style={{ fontSize: 11, opacity: 0.5, marginTop: 10 }}>Loading governance state…</div>;
+    return (
+      <Section icon={Landmark} title="Governance">
+        {loadError ? <ErrorLine error={loadError} /> : <Muted>Loading governance…</Muted>}
+      </Section>
+    );
   }
-
-  const run = async (fn) => {
-    setError("");
-    setBusy(true);
-    try {
-      await fn();
-      await load();
-    } catch (err) {
-      setError(err.shortMessage || err.reason || err.message || "Transaction failed.");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const hasGovernor = gov.governor !== ZERO;
   const hasKey = gov.operatingKey !== ZERO;
   const iAmGovernor = same(gov.governor, wallet.address);
   const iAmOperatingKey = hasKey && same(gov.operatingKey, wallet.address);
   const iAmCandidate = candidates?.some((c) => same(c.address, wallet.address));
-  const activeCandidates = candidates?.filter((c) => !c.eliminated) || [];
+  const standing = candidates?.filter((c) => !c.eliminated) || [];
   const lowGas = keyBalance !== null && keyBalance < LOW_GAS_WEI;
-  const registerKey = (addr) => run(async () => {
-    await setOperatingKeyReal(wallet.signer, company.id, addr, source);
-    setShowReplace(false);
-  });
+  const registerKey = (addr) => run(() => setOperatingKeyReal(wallet.signer, company.id, addr), async () => { setShowReplace(false); await load(); });
+  const sortedByVotes = [...(candidates || [])].sort((a, b) => (b.votes > a.votes ? 1 : b.votes < a.votes ? -1 : 0));
 
   return (
-    <div style={{ borderTop: "1px solid rgba(237,230,214,0.1)", marginTop: 14, paddingTop: 14 }}>
-      <div className="flex items-center gap-2 mono" style={{ fontSize: 11, opacity: 0.6, marginBottom: 10 }}>
-        <Landmark size={12} /> Governance, term {gov.termNum.toString()}
-      </div>
-
+    <Section icon={Landmark} title={gov.termNum === 0n ? "Governance · first election" : hasGovernor ? `Governance · term ${gov.termNum.toString()}` : `Governance · election for term ${(gov.termNum + 1n).toString()}`}>
       {hasGovernor ? (
         <div>
-          {/* Connected as this company's operating key */}
           {iAmOperatingKey && !termCountdown.passed && (
-            <div style={noticeBox("#7FA37A")}>
-              <div className="mono flex items-center gap-1" style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>
+            <Notice color={C.ok}>
+              <div className="flex items-center gap-1" style={{ fontWeight: 700, fontSize: 12, marginBottom: 4 }}>
                 <KeyRound size={12} /> Acting as governor of {company.name}
               </div>
-              <div className="mono" style={{ fontSize: 11, opacity: 0.8 }}>
-                This account is the registered operating key. Gas balance: {fmtEth(keyBalance ?? 0n)} ETH.
-              </div>
-              {lowGas && (
-                <div className="mono" style={{ fontSize: 11, color: "#C97D6F", marginTop: 6 }}>
-                  Balance is low. Send this account some ETH on Arbitrum One before taking governor actions.
-                </div>
-              )}
-            </div>
+              This account is the registered operating key. Governor controls are in the Treasury section below.
+              Gas balance: {fmtEth(keyBalance ?? 0n)} ETH.
+              {lowGas && <div style={{ color: C.danger, marginTop: 6 }}>Balance is low. Send this account some ETH on Arbitrum One before taking governor actions.</div>}
+            </Notice>
           )}
 
-          <div className="mono" style={{ fontSize: 12, marginBottom: 6 }}>
-            Governor: {short(gov.governor)}{iAmGovernor && " (you)"}
-          </div>
-          <div className="mono" style={{ fontSize: 11, opacity: 0.7, marginBottom: 6 }}>
-            Operating key: {hasKey ? short(gov.operatingKey) : "not registered yet"}
-          </div>
+          <div className="mono" style={{ fontSize: 12, marginBottom: 6 }}>Governor: {short(gov.governor)}{iAmGovernor && " (you)"}</div>
+          <div className="mono" style={{ fontSize: 11, opacity: 0.7, marginBottom: 6 }}>Operating key: {hasKey ? short(gov.operatingKey) : "not registered yet"}</div>
           <div className="mono flex items-center gap-1" style={{ fontSize: 11, opacity: 0.7, marginBottom: 10 }}>
             <Clock size={11} />
-            {termCountdown.passed ? "Term over. Anyone can start a new term." : `Term ends in ${termCountdown.label}`}
+            {termCountdown.passed ? "Term over. Anyone can start the next election." : `Term ends in ${termCountdown.label}`}
           </div>
 
-          {/* Governor connected, no key yet */}
           {iAmGovernor && !hasKey && !termCountdown.passed && (
-            <div style={noticeBox("#C98A3E")}>
-              <div className="mono" style={{ fontSize: 11, marginBottom: 8 }}>
-                You're elected. Register an operating key to use governor controls this term.
-              </div>
+            <Notice>
+              <div style={{ marginBottom: 8 }}>You're elected. Register an operating key to use governor controls this term.</div>
               <OperatingKeyForm governor={gov.governor} companyName={company.name} busy={busy} onSubmit={registerKey} submitLabel="Register operating key" />
-            </div>
+            </Notice>
           )}
 
-          {/* Governor connected, key already registered */}
           {iAmGovernor && hasKey && !termCountdown.passed && (
-            <div style={noticeBox("#C98A3E")}>
-              <div className="mono" style={{ fontSize: 11, marginBottom: 6 }}>
+            <Notice>
+              <div style={{ marginBottom: 6 }}>
                 Switch MetaMask to your operating-key account ({short(gov.operatingKey)}) to use governor controls.
                 Gas balance there: {fmtEth(keyBalance ?? 0n)} ETH.
               </div>
-              {lowGas && (
-                <div className="mono" style={{ fontSize: 11, color: "#C97D6F", marginBottom: 6 }}>
-                  That account is low on ETH. Send it some before taking governor actions.
-                </div>
-              )}
+              {lowGas && <div style={{ color: C.danger, marginBottom: 6 }}>That account is low on ETH. Send it some before taking governor actions.</div>}
               {!showReplace ? (
-                <button onClick={() => setShowReplace(true)} className="mono" style={{ ...btnPrimary, background: "transparent", color: "#C98A3E", border: "1px solid #C98A3E" }}>
-                  Replace operating key
-                </button>
+                <Button kind="outline" onClick={() => setShowReplace(true)}>Replace operating key</Button>
               ) : (
                 <div style={{ marginTop: 8 }}>
-                  <div className="mono" style={{ fontSize: 11, marginBottom: 6 }}>
-                    Use this if the old account is lost or you think it's compromised. The old key stops working as soon as the new one is registered.
-                  </div>
+                  <div style={{ marginBottom: 6 }}>Use this if the old account is lost or you think it's compromised. The old key stops working as soon as the new one is registered.</div>
                   <OperatingKeyForm governor={gov.governor} companyName={company.name} busy={busy} onSubmit={registerKey} submitLabel="Register new operating key" />
                 </div>
               )}
-            </div>
+            </Notice>
           )}
 
           {termCountdown.passed && (
-            <button onClick={() => run(() => startNewTermReal(wallet.signer, company.id, source))} disabled={busy} className="mono" style={btnLight}>
-              {busy ? "..." : "Start a new term"}
-            </button>
+            <Button kind="light" busy={busy} onClick={() => run(() => startNewTermReal(wallet.signer, company.id), load)}>Start the next election</Button>
           )}
         </div>
       ) : gov.round === 0n ? (
         /* Candidacy phase */
         <div>
           {myShares > 0n && !iAmCandidate && (
-            <div style={{ marginBottom: 10 }}>
-              <textarea
-                value={program}
-                onChange={(e) => setProgram(e.target.value)}
-                placeholder="Your platform (max ~700 words / 4500 bytes)"
-                className="mono"
-                style={{ ...inputStyle, minHeight: 60 }}
-              />
-              <button onClick={() => run(() => declareCandidacyReal(wallet.signer, company.id, program, source))} disabled={busy || !program.trim()} className="mono" style={btnPrimary}>
-                {busy ? "..." : "Declare candidacy"}
-              </button>
-            </div>
+            <CandidacyForm company={company} wallet={wallet} myShares={myShares} rules={rules} candidateCount={candidates?.length || 0} onDone={load} />
           )}
-          {myShares === 0n && (
-            <div className="mono" style={{ fontSize: 11, opacity: 0.5, marginBottom: 8 }}>
-              Hold at least one share of this company to stand or vote.
-            </div>
-          )}
+          {myShares === 0n && <Muted style={{ marginBottom: 10 }}>Hold shares in this company to stand as a candidate or vote.</Muted>}
 
           {candidates && candidates.length > 0 ? (
             <>
-              <div className="mono" style={{ fontSize: 11, opacity: 0.7, marginBottom: 8 }}>
-                {candidates.length} candidate{candidates.length === 1 ? "" : "s"} declared
+              <div className="mono flex items-center gap-1" style={{ fontSize: 11, opacity: 0.75, marginBottom: 8 }}>
+                <Users size={11} /> {candidates.length}{rules ? ` of ${rules.maxCandidates.toString()}` : ""} candidate{candidates.length === 1 ? "" : "s"}
               </div>
-              {candidates.map((c) => (
-                <CandidateRow key={c.address} c={c} wallet={wallet} openProgram={openProgram} setOpenProgram={setOpenProgram} />
-              ))}
-              <div className="mono" style={{ fontSize: 10.5, opacity: 0.6, margin: "10px 0 8px", lineHeight: 1.5 }}>
-                Opening voting starts a 3-day round. Make sure shareholders are ready to vote: a round that closes with no votes can't be tallied.
-              </div>
-              <button onClick={() => run(() => openGovernanceVoteReal(wallet.signer, company.id, source))} disabled={busy} className="mono" style={btnLight}>
-                {busy ? "..." : "Open voting"}
-              </button>
+              {candidates.map((c) => <CandidateCard key={c.address} c={c} wallet={wallet} sharesIssued={company.sharesIssued} />)}
+              <Muted style={{ margin: "10px 0 8px" }}>
+                Anyone can open voting. It runs for 3 days, and no new candidates can join after that, so wait until everyone who wants to stand has declared.
+                If nobody votes, voting simply reopens for another 3 days.
+              </Muted>
+              <Button kind="light" busy={busy} onClick={() => run(() => openGovernanceVoteReal(wallet.signer, company.id), load)}>Open voting</Button>
             </>
           ) : (
-            <div className="mono" style={{ fontSize: 11, opacity: 0.5 }}>No candidates yet.</div>
+            <Muted>No candidates yet.</Muted>
           )}
         </div>
       ) : !votingCountdown.passed ? (
         /* Voting open */
         <div>
-          <div className="mono flex items-center gap-1" style={{ fontSize: 11, opacity: 0.7, marginBottom: 10 }}>
-            <Clock size={11} /> Round {gov.round.toString()} closes in {votingCountdown.label}
+          <div className="mono flex items-center gap-1" style={{ fontSize: 11, opacity: 0.75, marginBottom: 6 }}>
+            <Clock size={11} /> {standing.length === 2 && candidates.length > 2 ? "Runoff round" : "Voting"} closes in {votingCountdown.label}
           </div>
-          {gov.totalVotesCast === 0n && (
-            <div className="mono flex gap-1" style={{ fontSize: 11, color: "#C98A3E", marginBottom: 10, lineHeight: 1.5 }}>
-              <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
-              No votes cast yet. If this round closes with no votes, the election can't be tallied.
-            </div>
-          )}
-          {activeCandidates.map((c) => (
-            <CandidateRow key={c.address} c={c} wallet={wallet} openProgram={openProgram} setOpenProgram={setOpenProgram} showVotes>
-              {myShares > 0n && !myVoted && (
-                <button onClick={() => run(() => voteReal(wallet.signer, company.id, c.address, source))} disabled={busy} className="mono" style={{ ...btnPrimary, padding: "4px 10px", fontSize: 10 }}>
-                  Vote
-                </button>
+          <Muted style={{ marginBottom: 10 }}>
+            A candidate with 51% of the votes cast wins. Otherwise the top two go to a runoff.
+             Votes count the shares each wallet held when this round opened.
+          </Muted>
+          {myVoted ? (
+            <Notice color={C.ok}>You've voted in this round with {count(myWeight, "share")}.</Notice>
+          ) : myWeight > 0n ? (
+            <Notice>You can vote with {count(myWeight, "share")}. Read the programs, then vote for one candidate.</Notice>
+          ) : myShares > 0n ? (
+            <Muted style={{ marginBottom: 10 }}>You got your shares after this round opened, so you can't vote in it. You'll be able to vote in later rounds.</Muted>
+          ) : null}
+          {sortedByVotes.map((c) => (
+            <CandidateCard key={c.address} c={c} wallet={wallet} sharesIssued={company.sharesIssued} showVotes totalVotes={gov.totalVotesCast}>
+              {!c.eliminated && myWeight > 0n && !myVoted && (
+                <Button small busy={busy} onClick={() => run(() => voteReal(wallet.signer, company.id, c.address), load)}>Vote</Button>
               )}
-            </CandidateRow>
+            </CandidateCard>
           ))}
-          {myVoted && <div className="mono" style={{ fontSize: 10, opacity: 0.5, marginTop: 6 }}>You've voted this round.</div>}
-        </div>
-      ) : gov.totalVotesCast === 0n ? (
-        /* Closed with zero votes: tallyRound would revert */
-        <div className="mono flex gap-1" style={{ fontSize: 11, color: "#C97D6F", lineHeight: 1.5 }}>
-          <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
-          This round closed with no votes, so it can't be tallied. The current contract has no way to restart this election.
         </div>
       ) : (
-        /* Closed, ready to tally */
-        <button onClick={() => run(() => tallyRoundReal(wallet.signer, company.id, source))} disabled={busy} className="mono" style={btnLight}>
-          {busy ? "..." : "Tally this round"}
-        </button>
-      )}
-
-      {error && <div className="mono" style={{ fontSize: 11, color: "#C97D6F", marginTop: 8 }}>{error}</div>}
-    </div>
-  );
-}
-
-function CandidateRow({ c, wallet, openProgram, setOpenProgram, showVotes, children }) {
-  const open = openProgram === c.address;
-  return (
-    <div style={{ padding: "6px 0", borderBottom: "1px solid rgba(237,230,214,0.08)" }}>
-      <div className="flex items-center justify-between">
-        <button onClick={() => setOpenProgram(open ? null : c.address)} className="mono" style={{ background: "none", border: "none", color: "#EDE6D6", fontSize: 11, cursor: "pointer", padding: 0, textAlign: "left" }}>
-          {short(c.address)}{same(c.address, wallet.address) && " (you)"}
-          {showVotes && ` — ${c.votes.toString()} votes`}
-          <span style={{ opacity: 0.5 }}> {open ? "hide platform" : "read platform"}</span>
-        </button>
-        {children}
-      </div>
-      {open && (
-        <div className="mono" style={{ fontSize: 11, opacity: 0.8, whiteSpace: "pre-wrap", marginTop: 6, lineHeight: 1.5 }}>
-          {c.program || "No platform text."}
+        /* Closed, waiting for a tally */
+        <div>
+          <Muted style={{ marginBottom: 10 }}>
+            {gov.totalVotesCast === 0n
+              ? "Voting closed with no votes. Counting it reopens voting for another 3 days."
+              : "Voting has closed. Anyone can count the votes: this elects a governor or starts a runoff between the top two."}
+          </Muted>
+          <Button kind="light" busy={busy} onClick={() => run(() => tallyRoundReal(wallet.signer, company.id), load)}>
+            {gov.totalVotesCast === 0n ? "Reopen voting" : "Count the votes"}
+          </Button>
         </div>
       )}
-    </div>
+
+      <ErrorLine error={error} />
+    </Section>
   );
 }

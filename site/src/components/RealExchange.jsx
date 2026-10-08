@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { Wallet as WalletIcon, ExternalLink, Loader2 } from "lucide-react";
 import { connectWallet, getClaimEligibility, claimReal, getVerifySelfEligibility, verifySelfReal, CONTRACT_ADDRESSES, ACTIVE_NETWORK, isMobileDevice, getMetaMaskDeepLink } from "../web3.js";
-import RealAuctions from "./RealAuctions.jsx";
 import RealRoundAuctions from "./RealRoundAuctions.jsx";
 
 // Simple wei -> ETH display formatter, enough precision to distinguish
@@ -228,12 +227,10 @@ export default function RealExchange({ onBack }) {
                   className="mono flex items-center gap-1"
                   style={{ fontSize: 11, color: "#7FAF8E" }}
                 >
-                  View on Etherscan <ExternalLink size={11} />
+                  View the transaction <ExternalLink size={11} />
                 </a>
               </div>
             )}
-
-            <RealAuctions wallet={wallet} />
 
             <RealRoundAuctions wallet={wallet} />
           </div>
@@ -259,9 +256,9 @@ export default function RealExchange({ onBack }) {
         <div className="mono" style={{ fontSize: 10, opacity: 0.4, marginTop: 40, lineHeight: 1.6 }}>
           Contract addresses ({ACTIVE_NETWORK.label}):<br/>
           InvestToken: {CONTRACT_ADDRESSES.InvestToken}<br/>
-          ShareAuction: {CONTRACT_ADDRESSES.ShareAuction}<br/>
           CompanyTreasury: {CONTRACT_ADDRESSES.CompanyTreasury}<br/>
           RoundAuction: {CONTRACT_ADDRESSES.RoundAuction}<br/>
+          Governance: {CONTRACT_ADDRESSES.Governance}<br/>
           OpenVerifier: {CONTRACT_ADDRESSES.OpenVerifier}
         </div>
       </div>
