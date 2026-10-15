@@ -5,7 +5,7 @@
 //
 // v8 is a complete fresh deployment (REDEPLOY_V8.md), done on Arbitrum
 // One on 8 October 2026: new InvestToken, OpenVerifier, RoundAuction,
-// Governance and CompanyTreasury, all owned by 0xD9fb…b2de0. ShareAuction
+// Governance and CompanyTreasury, owned by the site administrator (now via the timelock). ShareAuction
 // is retired.
 export const NETWORKS = {
   arbitrum: {

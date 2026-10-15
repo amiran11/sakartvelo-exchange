@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { useT } from "../i18n.jsx";
-import { getPublicStats, ACTIVE_NETWORK } from "../web3.js";
+import { getPublicStats, ACTIVE_NETWORK, CONTRACT_ADDRESSES } from "../web3.js";
 import { int, useChain } from "../components/liveUtils.js";
 import { LINKS } from "../components/Layout.jsx";
 import { usePageTitle } from "../meta.js";
@@ -22,7 +22,25 @@ export default function Rules() {
 
         <h2 className="h2">{t("What is real")}</h2>
         <p>{t("The process is real. Every claim, bid, vote and payment is a transaction on {network} that anyone can check. The companies are fictional, named after real Georgian places and industries. INVEST is given free and has no value when issued. If it later becomes freely tradable, it may get a market price set by demand alone; nobody guarantees that, and it is not an investment product.", { network: ACTIVE_NETWORK.label })}</p>
-        <p>{t("No single person can move value out of a company. The owner of the contracts can list companies, approve tokens and change the citizen limit, and every such change is announced 48 hours before it takes effect. The owner cannot move anyone's INVEST or shares.")}</p>
+        <p>{t("No single person can move value out of a company, and nobody, the site administrator included, can move anyone's INVEST or shares.")}</p>
+
+        <h2 className="h2">{t("What the site administrator can do")}</h2>
+        <p>{t("The site administrator can list companies, approve tokens for company treasuries, change the citizen limit, choose who may verify citizens, and switch whether INVEST can be sent between wallets, including freezing it. Because the administrator chooses the verifiers, they could also, in principle, create new citizens and with them new INVEST.")}</p>
+        <p>{t("These powers go through a public timelock: a change is scheduled first, anyone can see it, and it can only take effect 48 hours later.")}</p>
+        <p>{t("Two powers are instant. The administrator can pause new citizens, which stops new wallets from verifying and touches nothing else. And through the contracts of the earlier version 8, which still hold INVEST's trading switch, the administrator can make INVEST freely transferable for everyone at once; that can't be undone the same way.")}</p>
+        {CONTRACT_ADDRESSES.SakartveloTimelock && (
+          <p><a href={`${ACTIVE_NETWORK.blockExplorerUrls[0]}/address/${CONTRACT_ADDRESSES.SakartveloTimelock}`} target="_blank" rel="noreferrer">{t("See every scheduled change on Arbiscan")}</a></p>
+        )}
+
+        <h2 className="h2">{t("Risks, and how they are handled")}</h2>
+        <dl className="stack-sm">
+          <div><dt className="strong">{t("One person, many wallets.")}</dt><dd style={{ margin: 0 }}>{t("Verification checks a wallet's balance, not who owns it, so one person can verify several wallets. To slow this down, only ordinary wallets can verify, each needs 0.0083 ETH, at most 50 can verify an hour, and new verifications can be paused. A real privatization would need real identity checks.")}</dd></div>
+          <div><dt className="strong">{t("A rich buyer taking over a company.")}</dt><dd style={{ margin: 0 }}>{t("Someone with a lot of INVEST can buy a majority. They can't do it quickly or quietly: a round sells at most 150 shares, every bid is public, and everyone in a round pays the same price. Whatever they pay becomes the company's capital, which they can't take back out without the shareholders' vote.")}</dd></div>
+          <div><dt className="strong">{t("A CEO misusing company money.")}</dt><dd style={{ margin: 0 }}>{t("The CEO can only propose. Every payment, sale or investment is voted on by shareholders, the CEO can't vote on their own proposal, an approved proposal waits 5 days before it runs, at most 20% of a bucket can be spent per term, and shareholders can vote the CEO out.")}</dd></div>
+          <div><dt className="strong">{t("Bugs in the contracts.")}</dt><dd style={{ margin: 0 }}>{t("The contracts were reviewed in several rounds by AI agents, every finding was fixed and tested, and the full record is public. There has been no paid external audit. The contracts can't be upgraded, so the code you see on Arbiscan is the code that runs.")}</dd></div>
+          <div><dt className="strong">{t("Losing your wallet, or being scammed.")}</dt><dd style={{ margin: 0 }}>{t("Nobody can recover a lost wallet or reverse a transaction, the site administrator included. Keep your secret phrase offline. Nobody from this project will ever ask for it.")}</dd></div>
+        </dl>
+        <p><a href={LINKS.security} target="_blank" rel="noreferrer">{t("Read the full security review")}</a></p>
 
         <h2 className="h2">{t("The life of a company")}</h2>
         <ol>

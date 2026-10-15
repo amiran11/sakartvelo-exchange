@@ -807,6 +807,36 @@ plainly:
 Items 1–3 are engineering work. Items 4–5 are policy decisions about
 what the project is meant to be, as much as they are code.
 
+## Deployment: version 9 on Arbitrum One (14 October 2026)
+
+The reviewed v9 code is live at these addresses, all verified on Arbiscan
+with the compiler settings in `DEPLOY_V9.md`:
+
+| Contract | Address |
+|---|---|
+| InvestToken (kept from v8) | `0x99ED3761F8416342D814ad4CCAe81993c2Ab7e4a` |
+| RoundAuctionV9 | `0x65D37C51ec85584222aBA16e6B60B3Cd4BD6090f` |
+| GovernanceV9 | `0x044213A8c8b7C83E6A00cac1BbC8962B4b0Ebe85` |
+| CompanyTreasuryV9 | `0x70ffEeAabAaE49cB969ADC8137A3DeD94c8F1B75` |
+| CompanyDividendsV9 | `0x641f3864F7dcbD6630D21247e8DA123A2A138023` |
+| OpenVerifierV2 | `0xB055dB6E1291Ac08f581D3ce0a48791b4633AD5A` |
+| SakartveloTimelock | `0xBD357971d9935c68c39a2B7e4Fbf33ffC23adF6f` |
+
+**Owner powers after deployment (Finding 36).** InvestToken,
+RoundAuctionV9 and CompanyTreasuryV9 are owned by the timelock, so every
+owner power listed in Finding 36 (freezing or switching INVEST transfers,
+choosing verifiers, raising the citizen limit, listing companies,
+approving tokens) is scheduled publicly and takes effect only after 48
+hours; the delay itself can only change through the timelock.
+GovernanceV9 and CompanyDividendsV9 have no owner. Two powers remain
+instant, by choice, and are disclosed on the site's Rules page:
+OpenVerifierV2's guardian pause (stops new verifications, nothing else),
+and the v8 RoundAuction and CompanyTreasury, which stay owned directly by
+the administrator's wallet. Because InvestToken still reads its
+tradability switch from the v8 RoundAuction, the administrator can list a
+small v8 company and, once it passes 51%, make INVEST freely transferable
+for everyone without the 48-hour delay. That switch is one-way in v8.
+
 ## What this document is not
 
 It is not a certification that the contracts are free of bugs, not a
